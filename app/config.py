@@ -1,0 +1,102 @@
+"""
+GSRS MCP Server Configuration
+"""
+import json
+import os
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    """Parse a boolean environment variable with a sensible default."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_list_env(name: str, default: list[str]) -> list[str]:
+    """Parse a list environment variable from JSON array or comma-separated values."""
+    value = os.getenv(name)
+    if value is None:
+        return list(default)
+
+    raw_value = value.strip()
+    if not raw_value:
+        return []
+
+    if raw_value.startswith("["):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [item for item in (str(entry).strip() for entry in parsed) if item]
+
+    return [item for item in (part.strip() for part in raw_value.split(",")) if item]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"  # Ignore unused environment variables
+    )
+
+    # Database URL
+    # PostgreSQL: postgresql://user:pass@host:port/dbname
+    # ChromaDB: chroma://./chroma_data/chunks
+    database_url: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/gsrs_rag")
+
+    # Embedding API Configuration
+    embedding_api_key: str = os.getenv("EMBEDDING_API_KEY", "")
+    embedding_url: str = os.getenv("EMBEDDING_URL", "https://api.openai.com/v1/embeddings")
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_dimension: int = int(os.getenv("EMBEDDING_DIMENSION", "1536"))
+    embedding_verify_ssl: bool = _get_bool_env("EMBEDDING_VERIFY_SSL", True)
+
+    # SubstanceChunker Configuration (ChunkerConfig fine-tuning)
+    # See gsrs.services.ai.ChunkerConfig
+    chunker_name_batch_size: int = int(os.getenv("CHUNKER_NAME_BATCH_SIZE", "30"))
+    chunker_emit_atomic_name_chunks: bool = _get_bool_env("CHUNKER_EMIT_ATOMIC_NAME_CHUNKS", False)
+    chunker_emit_sequence_segments: bool = _get_bool_env("CHUNKER_EMIT_SEQUENCE_SEGMENTS", False)
+    chunker_max_sequence_segment_len: int = int(os.getenv("CHUNKER_MAX_SEQUENCE_SEGMENT_LEN", "300"))
+    chunker_emit_full_sequence_in_text: bool = _get_bool_env("CHUNKER_EMIT_FULL_SEQUENCE_IN_TEXT", False)
+    chunker_include_admin_validation_notes: bool = _get_bool_env("CHUNKER_INCLUDE_ADMIN_VALIDATION_NOTES", False)
+    chunker_include_reference_index_chunk: bool = _get_bool_env("CHUNKER_INCLUDE_REFERENCE_INDEX_CHUNK", True)
+    chunker_include_classification_chunk: bool = _get_bool_env("CHUNKER_INCLUDE_CLASSIFICATION_CHUNK", True)
+    chunker_include_grouped_relationship_summaries: bool = _get_bool_env("CHUNKER_INCLUDE_GROUPED_RELATIONSHIP_SUMMARIES", True)
+
+    # API
+    api_host: str = os.getenv("API_HOST", "0.0.0.0")
+    api_port: int = int(os.getenv("API_PORT", "8000"))
+
+    # Authentication
+    api_username: str = os.getenv("API_USERNAME", "admin")
+    api_password: str = os.getenv("API_PASSWORD", "admin123")
+
+    # Vector Search
+    default_top_k: int = int(os.getenv("DEFAULT_TOP_K", "5"))
+
+    # LLM API Configuration (for query rewrite, answering, etc.)
+    llm_api_key: str = os.getenv("LLM_API_KEY", "")
+    llm_url: str = os.getenv("LLM_URL", "https://api.openai.com/v1/chat/completions")
+    llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    llm_verify_ssl: bool = _get_bool_env("LLM_VERIFY_SSL", True)
+    llm_timeout: int = int(os.getenv("LLM_TIMEOUT", "30"))
+
+    # Similar Substance Search - Reliable identifier codes (prioritized)
+    similarity_reliable_codes: list[str] = _get_list_env(
+        "SIMILARITY_RELIABLE_CODES",
+        ["FDA UNII", "UNII", "SMS_ID", "SMSID", "xEVMPD", "EVMPD", "ASK", "ASKP"],
+    )
+
+    # GSRS Official API Configuration
+    gsrs_api_url: str = os.getenv("GSRS_API_URL", "https://gsrs.ncats.nih.gov/api/v1")
+    gsrs_api_timeout: int = int(os.getenv("GSRS_API_TIMEOUT", "30"))
+    gsrs_api_verify_ssl: bool = _get_bool_env("GSRS_API_VERIFY_SSL", True)
+    gsrs_api_public_only: bool = _get_bool_env("GSRS_API_PUBLIC_ONLY", False)
+
+
+settings = Settings()

@@ -1,0 +1,7 @@
+# Additional requirements for examples
+
+# ChatGPT integration
+openai>=2.30.0
+
+# HTTP client (already in main requirements, listed for clarity)
+httpx>=0.28.1

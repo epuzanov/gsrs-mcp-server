@@ -1,0 +1,26 @@
+fastapi==0.135.3
+uvicorn[standard]==0.44.0
+pydantic==2.12.5
+pydantic-settings==2.13.1
+sqlalchemy==2.0.49
+psycopg2-binary==2.9.11
+pgvector==0.4.2
+numpy==2.4.4
+httpx==0.28.1
+python-multipart==0.0.24
+aiofiles==25.1.0
+asyncpg==0.31.0
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+python-dateutil==2.9.0.post0
+
+# GSRS model library for substance chunking (direct from GitHub)
+gsrs-services-ai @ git+https://github.com/epuzanov/gsrs.services.ai.git
+gsrs-model @ git+https://github.com/epuzanov/gsrs.model.git
+
+# Optional: ChromaDB for development/testing
+# Install with: pip install -r requirements.txt (chromadb is optional)
+chromadb>=1.5.7
+
+# MCP (Model Context Protocol) server support
+mcp>=1.0.0

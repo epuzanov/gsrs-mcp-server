@@ -1,0 +1,107 @@
+services:
+  # PostgreSQL with pgvector extension (Production Database)
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: gsrs-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gsrs_secure_password_change_me}
+      POSTGRES_DB: gsrs_rag
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gsrs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    profiles:
+      - postgres
+
+  # GSRS MCP Server API
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gsrs-mcp-server
+    environment:
+      # Database URL - scheme determines backend automatically:
+      # - PostgreSQL: postgresql://user:pass@host:port/dbname
+      # - ChromaDB: chroma://./chroma_data/chunks
+      # For PostgreSQL (production):
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-gsrs_secure_password_change_me}@postgres:5432/gsrs_rag}
+      # For ChromaDB (development - uncomment to use):
+      # DATABASE_URL: chroma://./chroma_data/chunks
+      # Embedding API Configuration
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_URL: ${EMBEDDING_URL:-https://api.openai.com/v1/embeddings}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
+      # Authentication (HTTP Basic + Bearer token for MCP)
+      API_USERNAME: ${API_USERNAME:-admin}
+      API_PASSWORD: ${API_PASSWORD:-admin123}
+      # API Configuration
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      DEFAULT_TOP_K: 5
+      # GSRS Official API Configuration
+      GSRS_API_URL: ${GSRS_API_URL:-https://gsrs.ncats.nih.gov/api/v1}
+      GSRS_API_TIMEOUT: ${GSRS_API_TIMEOUT:-30}
+      GSRS_API_VERIFY_SSL: ${GSRS_API_VERIFY_SSL:-true}
+      GSRS_API_PUBLIC_ONLY: ${GSRS_API_PUBLIC_ONLY:-false}
+      # LLM API Configuration (for /ask endpoint)
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_URL: ${LLM_URL:-https://api.openai.com/v1/chat/completions}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_VERIFY_SSL: ${LLM_VERIFY_SSL:-true}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
+      # MCP Transport: "streamable-http" or "stdio"
+      MCP_TRANSPORT: streamable-http
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    profiles:
+      - postgres
+      - chroma
+
+  # Optional: Open WebUI for LLM interface
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: gsrs-open-webui
+    environment:
+      # Ollama configuration - use host.docker.internal for local Ollama
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:-gsrs_secret_key_change_me_in_production}
+      WEBUI_AUTH: ${WEBUI_AUTH:-true}
+    ports:
+      - "3000:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mcp-server
+    volumes:
+      - open-webui_data:/app/backend/data
+    profiles:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  open-webui_data:
+
+networks:
+  default:
+    name: gsrs-network
