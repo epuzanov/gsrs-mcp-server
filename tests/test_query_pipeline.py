@@ -87,12 +87,12 @@ class TestAggregationService(unittest.TestCase):
     def setUp(self):
         self.service = AggregationService()
 
-    def _make_doc(self, text: str, metadata: dict = None) -> VectorDocument:
+    def _make_doc(self, text: str, metadata: dict = None, section: str = "codes") -> VectorDocument:
         return VectorDocument(
             id=str(uuid4()),
             chunk_id=f"chunk_{uuid4()}",
             document_id=uuid4(),
-            section="codes",
+            section=section,
             text=text,
             embedding=[0.0] * 384,
             metadata_json=metadata or {},
@@ -270,12 +270,12 @@ class TestRerankerService(unittest.TestCase):
     def setUp(self):
         self.reranker = RerankerService()
 
-    def _make_doc(self, text: str, metadata: dict = None) -> VectorDocument:
+    def _make_doc(self, text: str, metadata: dict = None, section: str = "codes") -> VectorDocument:
         return VectorDocument(
             id=str(uuid4()),
             chunk_id=f"chunk_{uuid4()}",
             document_id=uuid4(),
-            section="codes",
+            section=section,
             text=text,
             embedding=[0.0] * 384,
             metadata_json=metadata or {},
@@ -308,8 +308,8 @@ class TestRerankerService(unittest.TestCase):
 
     def test_section_match_boost(self):
         """Test that section matches get boosted."""
-        doc1 = self._make_doc("Some text about codes", metadata={},)
-        doc2 = self._make_doc("Some text", metadata={})
+        doc1 = self._make_doc("Some text about codes", metadata={}, section="codes")
+        doc2 = self._make_doc("Some text", metadata={}, section="names")
 
         candidates = [(doc1, 0.5), (doc2, 0.55)]
         reranked = self.reranker.rerank(
@@ -334,6 +334,19 @@ class TestRerankerService(unittest.TestCase):
         for _, score in reranked:
             self.assertGreaterEqual(score, 0)
             self.assertLessEqual(score, 1.0)
+
+    def test_exact_name_metadata_boost(self):
+        """Exact canonical-name matches should outrank generic higher-hybrid hits."""
+        doc1 = self._make_doc(
+            "General chunk",
+            metadata={"canonical_name": "Aspirin", "names": [{"name": "Aspirin"}]},
+        )
+        doc2 = self._make_doc("Aspirin is discussed broadly")
+
+        candidates = [(doc1, 0.45), (doc2, 0.75)]
+        reranked = self.reranker.rerank(candidates, '"Aspirin"')
+
+        self.assertEqual(reranked[0][0].chunk_id, doc1.chunk_id)
 
 
 class TestAbstentionPolicy(unittest.TestCase):
@@ -388,6 +401,20 @@ class TestAbstentionPolicy(unittest.TestCase):
         decision = policy.evaluate(evidence, "test query")
         self.assertTrue(decision.abstained)
 
+    def test_identifier_first_miss_reason_is_specific(self):
+        """Deterministic identifier-first misses should abstain with a precise reason."""
+        decision = self.policy.evaluate([], "approval id ABC123", retrieval_mode="identifier-first:approval_id")
+        self.assertTrue(decision.abstained)
+        self.assertIn("identifier-first lookup", decision.abstain_reason)
+
+    def test_min_confidence_threshold_is_enforced(self):
+        """Configured confidence thresholds should trigger abstention on weak evidence."""
+        policy = AbstentionPolicy(min_score_threshold=0.2, min_confidence=0.6)
+        evidence = [self._make_evidence("Weak but somewhat relevant chunk", score=0.5)]
+        decision = policy.evaluate(evidence, "test query")
+        self.assertTrue(decision.abstained)
+        self.assertIn("threshold", decision.abstain_reason)
+
 
 class TestEvidenceExtractor(unittest.TestCase):
     """Unit tests for EvidenceExtractor."""
@@ -424,6 +451,16 @@ class TestEvidenceExtractor(unittest.TestCase):
         evidence = self.extractor.extract(candidates, "test")
         self.assertEqual(len(evidence), 1)
         self.assertIsInstance(evidence[0].citation, Citation)
+        self.assertEqual(evidence[0].citation.quote, "Test text")
+
+    def test_filters_low_confidence_tail_evidence(self):
+        """Additional weak tail chunks should be dropped to reduce answer drift."""
+        candidates = [
+            self._make_candidate("Top evidence", 0.9),
+            self._make_candidate("Weak tail evidence", 0.4),
+        ]
+        evidence = self.extractor.extract(candidates, "test")
+        self.assertEqual(len(evidence), 1)
 
 
 class TestAnswerGenerator(unittest.TestCase):
@@ -567,8 +604,38 @@ class TestIdentifierFirstQueryPipeline(unittest.TestCase):
 
         self.assertFalse(embedding.called)
         self.assertTrue(response.abstained)
-        self.assertIn("No relevant evidence", response.abstain_reason)
+        self.assertIn("identifier-first lookup", response.abstain_reason)
         self.assertEqual(response.debug["deterministic_route"]["result_count"], 0)
+
+    def test_inchikey_query_uses_identifier_first_routing(self):
+        doc, score = self._make_result(
+            "InChIKey BSYNRYMUTXBXSQ-UHFFFAOYSA-N belongs to Aspirin.",
+            {
+                "structure": {"inchikey": "BSYNRYMUTXBXSQ-UHFFFAOYSA-N"},
+                "canonical_name": "Aspirin",
+            },
+        )
+        vector_db = _StaticVectorDb([type("Result", (), {"document": doc, "score": score})()])
+        embedding = _FailingEmbeddingService()
+        pipeline = QueryPipelineService(
+            vector_db=vector_db,
+            embedding_service=embedding,
+            llm_service=None,
+            use_llm=False,
+            min_confidence=0.2,
+        )
+
+        response = pipeline.ask(
+            AskRequest(
+                query="BSYNRYMUTXBXSQ-UHFFFAOYSA-N",
+                return_evidence=True,
+                debug=True,
+            )
+        )
+
+        self.assertFalse(embedding.called)
+        self.assertFalse(response.abstained)
+        self.assertIn("identifier-first:inchikey", response.debug["retrieval_mode"])
 
     def test_debug_trace_surfaces_generation_fallback_details(self):
         doc, score = self._make_result(

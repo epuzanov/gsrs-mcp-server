@@ -186,6 +186,23 @@ Tool degradation is explicit:
 - `gsrs_ingest` reports chunker or embedding failures specifically instead of returning a generic retrieval error
 - `gsrs_api_*` tools fail fast with a GSRS-upstream-specific message when the upstream dependency is unavailable
 
+## Conservative Retrieval Behavior
+
+The retrieval path is intentionally conservative:
+
+- explicit UUID, approval ID, code, and InChIKey queries prefer deterministic identifier-first lookup
+- quoted or short exact-name queries receive stronger exact-name ranking boosts
+- reranking prefers field-aware matches in `codes`, `names`, and `structure` sections instead of relying on fuzzy overlap alone
+- evidence selection keeps the highest-confidence chunks and drops weak tail chunks that are likely to increase answer drift
+- low-confidence or identifier-miss cases abstain with an explicit reason instead of fabricating an answer
+
+When `gsrs_ask` answers successfully, the MCP response includes:
+
+- a direct answer
+- supporting evidence excerpts
+- citations with chunk references
+- an uncertainty note when the server abstains or degrades
+
 ## Debug and Observability
 
 Structured JSON logs include fields such as:

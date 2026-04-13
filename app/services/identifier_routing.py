@@ -11,6 +11,7 @@ _UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
     re.IGNORECASE,
 )
+_INCHIKEY_RE = re.compile(r"\b[A-Z]{14}-[A-Z]{10}-[A-Z]\b")
 _QUOTED_PHRASE_RE = re.compile(r'"([^"]+)"|\'([^\']+)\'')
 
 _QUESTION_PREFIXES = (
@@ -80,6 +81,11 @@ class IdentifierRouter:
             matched = uuid_match.group(0)
             return {"uuid": matched}, "uuid", matched
 
+        inchikey_match = _INCHIKEY_RE.search(query_text.upper())
+        if inchikey_match:
+            matched = inchikey_match.group(0)
+            return {"structure": {"inchikey": matched}}, "inchikey", matched
+
         approval_match = _APPROVAL_ID_RE.search(query_text)
         if approval_match:
             matched = approval_match.group(1)
@@ -120,4 +126,3 @@ class IdentifierRouter:
             return query.strip()
 
         return None
-

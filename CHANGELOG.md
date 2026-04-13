@@ -6,6 +6,7 @@
 - Tightened capability-specific degraded behavior so ingest, similarity search, vector-admin tools, and GSRS upstream tools now fail against the correct dependency set with more specific messages.
 - Preserved retrieval-only fallback when answer generation is unavailable and made identifier-first routing more deterministic.
 - Added stage-level ask-path diagnostics, richer optional debug traces, and structured-log redaction for sensitive fields.
+- Strengthened conservative retrieval with broader identifier-first routing, field-aware reranking boosts, tighter evidence selection, chunk-referenced citations, and clearer low-confidence abstention reasons.
 - Expanded tests toward readiness, degraded behavior, identifier routing, and MCP transport smoke coverage.
 
 ### Added

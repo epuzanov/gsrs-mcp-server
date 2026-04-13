@@ -312,7 +312,8 @@ def _format_ask_response(response) -> str:
         citation_lines = []
         for i, citation in enumerate(response.citations[:5], 1):
             suffix = f" - {citation.source_url}" if citation.source_url else ""
-            citation_lines.append(f"[{i}] {citation.section}{suffix}")
+            quote = f' "{citation.quote}"' if citation.quote else ""
+            citation_lines.append(f"[{i}] {citation.section} ({citation.chunk_id}){suffix}{quote}")
         sections.append("Citations:\n" + "\n".join(citation_lines))
 
     if response.debug:

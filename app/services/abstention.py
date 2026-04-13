@@ -3,6 +3,7 @@ GSRS MCP Server - Abstention Policy
 Decides whether to answer or abstain based on evidence quality.
 """
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, List, Optional
 
 from app.models.db import VectorDocument
@@ -44,6 +45,7 @@ class AbstentionPolicy:
         query: str,
         intent: str = "general",
         applied_filters: Optional[Dict[str, Any]] = None,
+        retrieval_mode: str = "hybrid",
     ) -> AbstentionDecision:
         """
         Evaluate whether to answer or abstain.
@@ -59,6 +61,12 @@ class AbstentionPolicy:
         """
         # Check: no evidence
         if not evidence:
+            if retrieval_mode.startswith("identifier-first"):
+                return AbstentionDecision(
+                    abstained=True,
+                    confidence=0.0,
+                    abstain_reason="No exact metadata match found for the identifier-first lookup.",
+                )
             return AbstentionDecision(
                 abstained=True,
                 confidence=0.0,
@@ -84,22 +92,30 @@ class AbstentionPolicy:
 
         avg_score = sum(top_scores) / len(top_scores)
         max_score = max(top_scores)
+        required_confidence = max(self.min_score_threshold, self.min_confidence)
 
-        if max_score < self.min_score_threshold:
+        if max_score < required_confidence:
             return AbstentionDecision(
                 abstained=True,
                 confidence=max_score,
-                abstain_reason=f"Evidence relevance too low (max score: {max_score:.2f}, threshold: {self.min_score_threshold}).",
+                abstain_reason=f"Evidence relevance too low (max score: {max_score:.2f}, threshold: {required_confidence:.2f}).",
             )
 
-        # Check: identifier lookup without exact match
-        if intent in ("identifier_lookup", "identifier_query"):
+        if avg_score < max(required_confidence * 0.85, 0.2) and len(evidence) == 1:
+            return AbstentionDecision(
+                abstained=True,
+                confidence=max_score,
+                abstain_reason="Only weak single-chunk evidence was retrieved; insufficient confidence to answer.",
+            )
+
+        # Check: identifier-first lookup without exact match
+        if retrieval_mode.startswith("identifier-first"):
             has_exact_match = self._has_identifier_support(evidence, query)
             if not has_exact_match:
                 return AbstentionDecision(
                     abstained=True,
                     confidence=max_score * 0.5,
-                    abstain_reason="Identifier lookup requested but no exact identifier match found in evidence.",
+                    abstain_reason="Identifier-first lookup requested but no exact identifier or exact-name match was found in evidence.",
                 )
 
         # Check: conflicting evidence
@@ -130,24 +146,23 @@ class AbstentionPolicy:
     def _has_identifier_support(self, evidence: List[EvidenceResult], query: str) -> bool:
         """Check if any evidence contains exact identifier matches."""
         query_lower = query.lower()
-        # Look for common identifier patterns
-        identifier_keywords = ["cas", "unii", "pubchem", "drugbank", "chembl", "rxcui"]
+        query_literals = self._extract_identifier_literals(query_lower)
+        query_name = self._extract_candidate_name(query)
 
         for e in evidence:
             text_lower = e.document.text.lower()
             metadata = e.document.metadata_json or {}
 
-            # Check for identifier codes in metadata
-            codes = metadata.get("codes", [])
-            for code in codes:
-                code_str = str(code).lower() if isinstance(code, str) else str(code.get("code", "")).lower()
-                for kw in identifier_keywords:
-                    if kw in query_lower and kw in code_str:
-                        return True
+            if query_literals:
+                candidate_values = self._extract_metadata_literals(metadata)
+                if any(literal in candidate_values for literal in query_literals):
+                    return True
+                if any(literal in text_lower for literal in query_literals):
+                    return True
 
-            # Check for identifier in text
-            for kw in identifier_keywords:
-                if kw in query_lower and kw in text_lower:
+            if query_name:
+                names = [name.lower() for name in self._extract_names(metadata)]
+                if query_name.lower() in names:
                     return True
 
         return False
@@ -205,3 +220,69 @@ class AbstentionPolicy:
 
         overlap_ratio = total_overlap / total_terms
         return overlap_ratio < 0.1  # Less than 10% term overlap
+
+    def _extract_identifier_literals(self, query_lower: str) -> List[str]:
+        patterns = [
+            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+            r"\b[a-z0-9]{4,}(?:-[a-z0-9]{2,})+\b",
+            r"\b[a-z]{14}-[a-z]{10}-[a-z]\b",
+        ]
+        matches: List[str] = []
+        for pattern in patterns:
+            matches.extend(match.lower() for match in re.findall(pattern, query_lower, re.IGNORECASE))
+        return list(dict.fromkeys(matches))
+
+    def _extract_metadata_literals(self, metadata: Dict[str, Any]) -> set[str]:
+        values: set[str] = set()
+        for key in ["uuid", "approvalID", "cas", "unii", "pubchem", "drugbank", "chembl", "rxcui"]:
+            value = metadata.get(key)
+            if value:
+                values.add(str(value).lower())
+
+        codes = metadata.get("codes", [])
+        if isinstance(codes, list):
+            for code in codes:
+                if isinstance(code, dict) and code.get("code"):
+                    values.add(str(code["code"]).lower())
+                elif isinstance(code, str):
+                    values.add(code.lower())
+
+        for key in ["reliable_codes", "all_codes"]:
+            bucket = metadata.get(key, {})
+            if isinstance(bucket, dict):
+                values.update(str(value).lower() for value in bucket.values() if value)
+
+        structure = metadata.get("structure", {})
+        if isinstance(structure, dict):
+            for key in ["inchikey", "inchi", "smiles"]:
+                value = structure.get(key)
+                if value:
+                    values.add(str(value).lower())
+
+        return values
+
+    def _extract_candidate_name(self, query: str) -> Optional[str]:
+        quoted_match = re.search(r'"([^"]+)"|\'([^\']+)\'', query)
+        if quoted_match:
+            return next(group for group in quoted_match.groups() if group)
+
+        stripped = query.strip().rstrip("?")
+        tokens = stripped.split()
+        if 0 < len(tokens) <= 4 and not any(token.lower() in {"cas", "unii", "approval", "identifier", "code"} for token in tokens):
+            return stripped
+        return None
+
+    def _extract_names(self, metadata: Dict[str, Any]) -> List[str]:
+        names: List[str] = []
+        canonical = metadata.get("canonical_name")
+        if canonical:
+            names.append(str(canonical))
+
+        names_list = metadata.get("names", [])
+        if isinstance(names_list, list):
+            for name in names_list:
+                if isinstance(name, dict) and name.get("name"):
+                    names.append(str(name["name"]))
+                elif isinstance(name, str):
+                    names.append(name)
+        return names

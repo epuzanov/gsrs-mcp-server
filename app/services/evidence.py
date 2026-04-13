@@ -31,10 +31,14 @@ class EvidenceExtractor:
         max_evidence_count: int = 10,
         max_snippet_length: int = 1000,
         max_chunks_per_section: int = 2,
+        additional_evidence_score_ratio: float = 0.75,
+        minimum_additional_score: float = 0.2,
     ):
         self.max_evidence_count = max_evidence_count
         self.max_snippet_length = max_snippet_length
         self.max_chunks_per_section = max_chunks_per_section
+        self.additional_evidence_score_ratio = additional_evidence_score_ratio
+        self.minimum_additional_score = minimum_additional_score
 
     def extract(
         self,
@@ -59,14 +63,23 @@ class EvidenceExtractor:
         results = []
         seen_chunks = set()
         section_counts: dict[str, int] = {}
+        top_score = candidates[0][1]
 
-        for doc, score in candidates:
+        for index, (doc, score) in enumerate(candidates):
             if len(results) >= self.max_evidence_count:
                 break
 
             if doc.chunk_id in seen_chunks:
                 continue
             seen_chunks.add(doc.chunk_id)
+
+            if index > 0:
+                minimum_score = max(
+                    self.minimum_additional_score,
+                    top_score * self.additional_evidence_score_ratio,
+                )
+                if score < minimum_score:
+                    continue
 
             # Prefer fewer, higher-confidence chunks per section to reduce answer drift.
             section = str(doc.section)
@@ -76,6 +89,7 @@ class EvidenceExtractor:
 
             citation = self._build_citation(doc)
             snippet = self._extract_snippet(doc, query)
+            citation.quote = snippet[:240] if snippet else None
 
             results.append(EvidenceResult(
                 document=doc,

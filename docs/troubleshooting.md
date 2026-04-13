@@ -67,3 +67,15 @@ In `gsrs_ask`, debug output now includes:
 - retrieved and reranked chunk IDs with scores
 - stage trace for retrieval, evidence, abstention, and answer generation
 - whether answer generation used the LLM, degraded to a template fallback, or abstained
+
+## Identifier lookup abstains unexpectedly
+
+If the query includes a concrete UUID, approval ID, code, or InChIKey, the server now prefers deterministic identifier-first routing. That means:
+
+- a miss is treated as an explicit abstention, not a fuzzy fallback
+- `/health` may still be healthy because this is an answer-quality decision, not an outage
+- `debug=true` will show `retrieval_mode` and the deterministic route that was attempted
+
+## Answer includes fewer evidence chunks than before
+
+That is intentional. The evidence selector now keeps a tighter set of high-confidence chunks and drops weak tail chunks to reduce answer drift. Use `debug=true` to inspect retrieved vs selected chunks if you need to compare ranking behavior.

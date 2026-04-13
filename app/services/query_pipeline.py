@@ -232,6 +232,7 @@ class QueryPipelineService:
             query=request.query,
             intent=rewrite_result.intent,
             applied_filters=applied_filters,
+            retrieval_mode=routing_mode,
         )
         diagnostics["confidence"] = abstention.confidence
         diagnostics["abstained"] = abstention.abstained
