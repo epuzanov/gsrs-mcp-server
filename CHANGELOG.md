@@ -12,6 +12,7 @@
 - Rewrote `scripts/load_data.py` around a persistent MCP client session with MCP-native tool validation and optional `stdio` transport support.
 - Switched GSRS upstream structure and sequence search to the current documentation example flow using `/ginas/app/api/v1/...Search?q=...` plus status/result polling.
 - Added a Podman `kube play` manifest for local containerized deployment and aligned the compose file with the current `MCP_*` setting names.
+- Expanded the integration guides and examples for ChatGPT, Open WebUI, Ollama, and OpenAI API remote-MCP usage.
 - Expanded tests toward runtime startup/failure semantics, auth enforcement, degraded behavior, identifier routing, grounded golden-set coverage, and MCP transport smoke coverage.
 
 ### Added

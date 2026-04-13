@@ -1,5 +1,10 @@
 # MCP Guide
 
+See also:
+
+- [chatgpt.md](chatgpt.md)
+- [ollama-open-webui.md](ollama-open-webui.md)
+
 ## Supported Transports
 
 - `streamable-http`

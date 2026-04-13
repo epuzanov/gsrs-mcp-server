@@ -899,6 +899,15 @@ class TestExampleScripts(unittest.TestCase):
         )
         self.assertTrue(os.path.isfile(func_path))
 
+    def test_openai_responses_mcp_example_exists(self):
+        """Test that openai_responses_mcp.py exists."""
+        import os
+        example_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "examples", "openai_responses_mcp.py"
+        )
+        self.assertTrue(os.path.isfile(example_path))
+
     def test_system_prompt_exists(self):
         """Test that system prompt files exist."""
         import os
@@ -952,6 +961,19 @@ class TestExampleScripts(unittest.TestCase):
         self.assertIn("streamable_http_client", content)
         self.assertIn("ClientSession", content)
         self.assertIn("gsrs_ask", content)
+
+    def test_openai_responses_example_uses_remote_mcp(self):
+        """Test that the OpenAI API example uses a remote MCP tool."""
+        import os
+        example_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "examples", "openai_responses_mcp.py"
+        )
+        with open(example_path, "r") as f:
+            content = f.read()
+        self.assertIn("client.responses.create", content)
+        self.assertIn('"type": "mcp"', content)
+        self.assertIn("server_url", content)
 
     def test_system_prompt_non_empty(self):
         """Test that system prompt files are non-empty."""

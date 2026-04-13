@@ -9,6 +9,8 @@ Start here:
 - [authentication.md](authentication.md): bearer-token auth for the MCP HTTP transport
 - [api-reference.md](api-reference.md): MCP tools plus health endpoints
 - [guides/mcp.md](guides/mcp.md): client configuration examples
+- [guides/chatgpt.md](guides/chatgpt.md): ChatGPT integration paths
+- [guides/ollama-open-webui.md](guides/ollama-open-webui.md): Ollama and Open WebUI integration paths
 
 Reference links:
 
