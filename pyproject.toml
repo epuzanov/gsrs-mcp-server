@@ -82,7 +82,6 @@ Issues = "https://github.com/epuzanov/gsrs-mcp-server/issues"
 
 [project.scripts]
 gsrs-mcp-server = "app.main:main"
-gsrs-gateway = "app.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
