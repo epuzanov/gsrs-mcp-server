@@ -16,6 +16,18 @@
 
 This repository no longer documents or relies on legacy REST-style routes such as `/ingest` or `/query`. The public contract is the MCP tool surface plus the health endpoints above.
 
+Quick start from the repo root:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+pip install -e . --no-deps
+copy .env.example .env
+gsrs-mcp-server
+curl http://localhost:8000/readyz
+```
+
 ## What It Exposes
 
 - MCP transport: `streamable-http` on `/mcp`, or `stdio`
@@ -38,7 +50,7 @@ This repository no longer documents or relies on legacy REST-style routes such a
 
 ## Current Architecture
 
-The server is MCP-first. `app/main.py` builds a `FastMCP` server, not a FastAPI REST application.
+The server is MCP-first. `app/main.py` builds a `FastMCP` server.
 
 Runtime flow:
 

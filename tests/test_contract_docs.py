@@ -19,7 +19,6 @@ class TestReadmeRuntimeContract(unittest.TestCase):
             "/health",
             "Authorization: Bearer <MCP_PASSWORD>",
             "gsrs-mcp-server",
-            "not a FastAPI REST application",
         ]
 
         for fragment in required_fragments:
@@ -29,6 +28,15 @@ class TestReadmeRuntimeContract(unittest.TestCase):
     def test_readme_explicitly_rejects_legacy_rest_contract(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("no longer documents or relies on legacy REST-style routes", readme)
+        self.assertNotIn("HTTP Basic Auth and API Key support", readme)
+
+    def test_examples_and_contributing_match_current_cli_contract(self):
+        contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        examples = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("gsrs-mcp-server", contributing)
+        self.assertIn("/mcp", examples)
+        self.assertIn("MCP_PASSWORD", examples)
 
 
 class TestPackagingAndRuntimeArtifacts(unittest.TestCase):
