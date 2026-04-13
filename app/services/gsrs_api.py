@@ -4,6 +4,7 @@ GSRS MCP Server - GSRS API Client Service
 Provides access to the official GSRS REST API for fetching substance data,
 searching by text, structure, and sequence.
 """
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -26,11 +27,15 @@ class GsrsApiService:
         timeout: int = 30,
         verify_ssl: bool = True,
         public_only: bool = False,
+        max_retries: int = 1,
+        retry_backoff_ms: int = 250,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self.public_only = public_only
+        self.max_retries = max_retries
+        self.retry_backoff_ms = retry_backoff_ms
 
     # ------------------------------------------------------------------
     # Public-only filtering
@@ -71,6 +76,38 @@ class GsrsApiService:
             headers={"Accept": "application/json"},
         )
 
+    def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                with self._client() as client:
+                    resp = client.request(method, url, **kwargs)
+                    if resp.status_code == 404:
+                        return resp
+                    resp.raise_for_status()
+                    return resp
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                time.sleep(self.retry_backoff_ms / 1000)
+        raise RuntimeError(
+            f"GSRS upstream request failed after {self.max_retries + 1} attempt(s): {last_error}"
+        ) from last_error
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return non-sensitive configuration details."""
+        return {
+            "base_url": self.base_url,
+            "timeout": self.timeout,
+            "verify_ssl": self.verify_ssl,
+            "public_only": self.public_only,
+        }
+
+    def ping(self) -> None:
+        """Lightweight upstream probe used by readiness checks."""
+        self._request("GET", f"{self.base_url}/substances/search", params={"query": "aspirin", "size": 1})
+
     # ------------------------------------------------------------------
     # Core substance endpoints
     # ------------------------------------------------------------------
@@ -78,12 +115,10 @@ class GsrsApiService:
     def get_substance_by_uuid(self, uuid: str) -> Optional[Dict[str, Any]]:
         """Fetch a complete substance document by UUID."""
         url = f"{self.base_url}/substances({uuid})"
-        with self._client() as client:
-            resp = client.get(url, params={"view": "full"})
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            data = resp.json()
+        resp = self._request("GET", url, params={"view": "full"})
+        if resp.status_code == 404:
+            return None
+        data = resp.json()
         if self.public_only:
             data = self._filter_public(data)
         return data
@@ -115,10 +150,8 @@ class GsrsApiService:
         if fields:
             params["fields"] = fields
 
-        with self._client() as client:
-            resp = client.get(f"{self.base_url}/substances/search", params=params)
-            resp.raise_for_status()
-            return resp.json()
+        resp = self._request("GET", f"{self.base_url}/substances/search", params=params)
+        return resp.json()
 
     def structure_search(
         self,
@@ -151,13 +184,12 @@ class GsrsApiService:
         if inchi:
             payload["inchi"] = inchi
 
-        with self._client() as client:
-            resp = client.post(
-                f"{self.base_url}/substances/structure-search",
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = self._request(
+            "POST",
+            f"{self.base_url}/substances/structure-search",
+            json=payload,
+        )
+        return resp.json()
 
     def sequence_search(
         self,
@@ -185,10 +217,9 @@ class GsrsApiService:
             "size": size,
         }
 
-        with self._client() as client:
-            resp = client.post(
-                f"{self.base_url}/substances/sequence-search",
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = self._request(
+            "POST",
+            f"{self.base_url}/substances/sequence-search",
+            json=payload,
+        )
+        return resp.json()

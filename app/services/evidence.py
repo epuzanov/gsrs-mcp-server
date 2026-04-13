@@ -30,9 +30,11 @@ class EvidenceExtractor:
         self,
         max_evidence_count: int = 10,
         max_snippet_length: int = 1000,
+        max_chunks_per_section: int = 2,
     ):
         self.max_evidence_count = max_evidence_count
         self.max_snippet_length = max_snippet_length
+        self.max_chunks_per_section = max_chunks_per_section
 
     def extract(
         self,
@@ -56,6 +58,7 @@ class EvidenceExtractor:
 
         results = []
         seen_chunks = set()
+        section_counts: dict[str, int] = {}
 
         for doc, score in candidates:
             if len(results) >= self.max_evidence_count:
@@ -64,6 +67,12 @@ class EvidenceExtractor:
             if doc.chunk_id in seen_chunks:
                 continue
             seen_chunks.add(doc.chunk_id)
+
+            # Prefer fewer, higher-confidence chunks per section to reduce answer drift.
+            section = str(doc.section)
+            if section_counts.get(section, 0) >= self.max_chunks_per_section:
+                continue
+            section_counts[section] = section_counts.get(section, 0) + 1
 
             citation = self._build_citation(doc)
             snippet = self._extract_snippet(doc, query)

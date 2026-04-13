@@ -22,28 +22,21 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 
 from app.config import settings
-from app.models import VectorDocument
 from app.models.api import (
     AskRequest,
-    Citation,
     QueryResult,
     SimilarSubstanceResult,
 )
-from app.services import VectorDatabaseService, EmbeddingService
+from app.observability import ToolTelemetry, configure_logging
+from app.runtime import ServerRuntime
 from app.services.aggregation import AggregationService
-from app.services.gsrs_api import GsrsApiService
-from app.services.llm import LLMService
 from app.services.metadata_filters import MetadataFilterBuilder
-from app.services.query_pipeline import QueryPipelineService
 from app.services.query_rewrite import QueryRewriteService
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+configure_logging(settings.debug_mode)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -66,33 +59,7 @@ class SimpleTokenVerifier(TokenVerifier):
 # ---------------------------------------------------------------------------
 # Core services
 # ---------------------------------------------------------------------------
-vector_db = VectorDatabaseService()
-embedding_service = EmbeddingService(
-    api_key=settings.embedding_api_key,
-    model=settings.embedding_model,
-    url=settings.embedding_url,
-    dimension=settings.embedding_dimension,
-    verify_ssl=settings.embedding_verify_ssl,
-)
-chunker = None  # lazily initialized in lifespan
-llm_service = (
-    LLMService(
-        api_key=settings.llm_api_key,
-        url=settings.llm_url,
-        model=settings.llm_model,
-        verify_ssl=settings.llm_verify_ssl,
-        timeout=settings.llm_timeout,
-    )
-    if settings.llm_api_key
-    else None
-)
-query_pipeline = None  # lazily initialized in lifespan
-gsrs_api = GsrsApiService(
-    base_url=settings.gsrs_api_url,
-    timeout=settings.gsrs_api_timeout,
-    verify_ssl=settings.gsrs_api_verify_ssl,
-    public_only=settings.gsrs_api_public_only,
-)
+runtime = ServerRuntime(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -101,43 +68,26 @@ gsrs_api = GsrsApiService(
 
 @asynccontextmanager
 async def server_lifespan(server):
-    """Initialise vector database and services on startup."""
-    global chunker, query_pipeline
-
-    logger.info("Initializing vector database...")
-    vector_db.connect()
-    vector_db.initialize(dimension=settings.embedding_dimension)
-    logger.info("Loaded embedding model: %s", embedding_service.get_model_info())
-
-    from gsrs.model import Substance
-    from gsrs.services.ai import SubstanceChunker, ChunkerConfig
-    from app.models import VectorDocument
-
-    chunker = SubstanceChunker(
-        class_=VectorDocument,
-        config=ChunkerConfig(
-            name_batch_size=settings.chunker_name_batch_size,
-            emit_atomic_name_chunks=settings.chunker_emit_atomic_name_chunks,
-            emit_sequence_segments=settings.chunker_emit_sequence_segments,
-            max_sequence_segment_len=settings.chunker_max_sequence_segment_len,
-            emit_full_sequence_in_text=settings.chunker_emit_full_sequence_in_text,
-            include_admin_validation_notes=settings.chunker_include_admin_validation_notes,
-            include_reference_index_chunk=settings.chunker_include_reference_index_chunk,
-            include_classification_chunk=settings.chunker_include_classification_chunk,
-            include_grouped_relationship_summaries=settings.chunker_include_grouped_relationship_summaries,
-        ),
+    """Initialise shared runtime services on startup."""
+    runtime.initialize()
+    logger.info(
+        "runtime_initialized",
+        extra={
+            "backend": runtime.backend_name,
+            "ready": runtime.ready,
+            "degraded": runtime.degraded,
+            "components": {
+                name: {
+                    "ready": status.ready,
+                    "required": status.required,
+                    "error": status.error,
+                }
+                for name, status in runtime.components.items()
+            },
+        },
     )
-    query_pipeline = QueryPipelineService(
-        vector_db=vector_db,
-        embedding_service=embedding_service,
-        llm_service=llm_service,
-        use_llm=llm_service is not None,
-    )
-
     yield
-
-    vector_db.disconnect()
-    embedding_service.close()
+    runtime.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -170,21 +120,29 @@ mcp = FastMCP(
 
 
 # ---------------------------------------------------------------------------
-# Health check (custom route, no auth required)
+# Health checks (custom routes, no auth required)
 # ---------------------------------------------------------------------------
+
+@mcp.custom_route("/livez", methods=["GET"], include_in_schema=True)
+async def live_check(request: Request) -> JSONResponse:
+    """Liveness probe: process is up if this route responds."""
+    return JSONResponse({"status": "alive"})
+
+
+@mcp.custom_route("/readyz", methods=["GET"], include_in_schema=True)
+async def readiness_check(request: Request) -> JSONResponse:
+    """Readiness probe: dependencies and runtime state are ready for retrieval."""
+    payload = runtime.get_status_payload()
+    status_code = 200 if payload["ready"] else 503
+    return JSONResponse(payload, status_code=status_code)
+
 
 @mcp.custom_route("/health", methods=["GET"], include_in_schema=True)
 async def health_check(request: Request) -> JSONResponse:
-    """Health check endpoint."""
-    try:
-        stats = vector_db.get_statistics()
-    except Exception:
-        stats = {"total_chunks": 0, "total_substances": 0}
-    return JSONResponse({
-        "status": "healthy",
-        "database_connected": bool(stats.get("total_chunks") or stats.get("total_substances")),
-        "statistics": stats,
-    })
+    """Combined health endpoint with liveness, readiness, and dependency state."""
+    payload = runtime.get_status_payload()
+    payload["live"] = True
+    return JSONResponse(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +273,54 @@ def _try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _tool_call(tool_name: str) -> ToolTelemetry:
+    """Create a telemetry context for a tool call."""
+    return ToolTelemetry.start(
+        logger=logger,
+        metrics=runtime.metrics,
+        tool_name=tool_name,
+        backend=runtime.backend_name,
+    )
+
+
+def _format_ask_response(response) -> str:
+    """Format AskResponse as a grounded, operator-friendly MCP string."""
+    sections: List[str] = []
+
+    if response.abstained:
+        sections.append("Direct answer:\nInsufficient evidence to answer confidently.")
+    else:
+        sections.append(f"Direct answer:\n{response.answer or 'No answer available.'}")
+
+    if response.degraded_reason:
+        sections.append(f"Mode:\n{response.degraded_reason}")
+
+    sections.append(f"Confidence:\n{response.confidence:.2f}")
+
+    if response.abstain_reason:
+        sections.append(f"Uncertainty:\n{response.abstain_reason}")
+
+    if response.evidence_chunks:
+        evidence_lines = []
+        for i, chunk in enumerate(response.evidence_chunks[:5], 1):
+            evidence_lines.append(
+                f"[{i}] ({chunk.element_path}, {chunk.similarity_score:.2f}) {chunk.text[:180]}"
+            )
+        sections.append("Supporting evidence:\n" + "\n".join(evidence_lines))
+
+    if response.citations:
+        citation_lines = []
+        for i, citation in enumerate(response.citations[:5], 1):
+            suffix = f" - {citation.source_url}" if citation.source_url else ""
+            citation_lines.append(f"[{i}] {citation.section}{suffix}")
+        sections.append("Citations:\n" + "\n".join(citation_lines))
+
+    if response.debug:
+        sections.append("Debug:\n" + json.dumps(response.debug, indent=2))
+
+    return "\n\n".join(sections)
+
+
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
@@ -326,6 +332,7 @@ async def gsrs_ask(
     answer_style: Literal["concise", "standard", "detailed"] = "standard",
     return_evidence: bool = True,
     min_confidence: float = 0.0,
+    debug: bool = False,
 ) -> str:
     """Full AI answering pipeline with citations and evidence.
 
@@ -342,53 +349,63 @@ async def gsrs_ask(
     Returns:
         Answer with citations, or similar-substance report.
     """
-    parsed = _try_parse_json(query)
-    substance = parsed if parsed and _is_gsrs_substance(parsed) else None
+    tool = _tool_call("gsrs_ask")
+    try:
+        parsed = _try_parse_json(query)
+        substance = parsed if parsed and _is_gsrs_substance(parsed) else None
 
-    if substance:
-        example = _extract_search_criteria(substance)
-        results = vector_db.search_by_example(
-            example=example, top_k=top_k, mode="contains",
+        if substance:
+            example = _extract_search_criteria(substance)
+            results = runtime.vector_db.search_by_example(
+                example=example, top_k=top_k, mode="contains",
+            )
+            groups = _group_by_substance(results, True, example.get("uuid"))
+            name = substance.get("names", [{}])[0].get("name", "substance")
+            tool.finish("success", result_count=len(groups), citation_count=0)
+            if not groups:
+                return f"No similar substances found for **{name}**."
+            lines = [f"Found {len(groups)} substance(s) similar to **{name or 'the provided substance'}**:\n"]
+            for i, result in enumerate(groups, 1):
+                substance_name = result.canonical_name or result.substance_uuid
+                lines.append(f"{i}. **{substance_name}** (score {result.match_score:.2f}, {len(result.chunks)} chunks)")
+                if result.matched_fields:
+                    lines.append(f"   Matched: {', '.join(result.matched_fields[:5])}")
+                if result.chunks:
+                    lines.append(f"   Preview: {result.chunks[0].text[:150]}...")
+            return "\n".join(lines)
+
+        if not runtime.retrieval_available():
+            reason = runtime.retrieval_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"Retrieval is currently unavailable: {reason}"
+
+        if runtime.query_pipeline is None:
+            raise RuntimeError("Query pipeline is not initialized.")
+
+        request = AskRequest(
+            query=query,
+            top_k=top_k,
+            answer_style=answer_style,
+            return_evidence=return_evidence,
+            min_confidence=min_confidence,
+            debug=debug or settings.debug_mode,
         )
-        groups = _group_by_substance(results, True, example.get("uuid"))
-        name = substance.get("names", [{}])[0].get("name", "substance")
-        if not groups:
-            return f"No similar substances found for **{name}**."
-        lines = [f"Found {len(groups)} substance(s) similar to "
-                 f"**{name or 'the provided substance'}**:\n"]
-        for i, r in enumerate(groups, 1):
-            n = r.canonical_name or r.substance_uuid
-            lines.append(f"{i}. **{n}** (score {r.match_score:.2f}, "
-                         f"{len(r.chunks)} chunks)")
-            if r.matched_fields:
-                lines.append(f"   Matched: {', '.join(r.matched_fields[:5])}")
-            if r.chunks:
-                lines.append(f"   Preview: {r.chunks[0].text[:150]}...")
-        return "\n".join(lines)
-
-    req = AskRequest(
-        query=query, top_k=top_k, answer_style=answer_style,
-        return_evidence=return_evidence, min_confidence=min_confidence,
-    )
-    resp = query_pipeline.ask(req)
-    parts: List[str] = []
-    if resp.abstained:
-        parts.append(f"⚠️ Could not answer: {resp.abstain_reason or 'Insufficient evidence.'}")
-    elif resp.answer:
-        parts.append(resp.answer)
-    else:
-        parts.append("No answer available.")
-    parts.append(f"\n📊 Confidence: {resp.confidence:.2f}")
-    if resp.citations:
-        parts.append("\n📎 Citations:")
-        for i, c in enumerate(resp.citations[:5], 1):
-            parts.append(f"  [{i}] {c.section}" + (f" — {c.source_url}" if c.source_url else ""))
-    if resp.evidence_chunks and return_evidence:
-        parts.append("\n📄 Evidence:")
-        for i, ch in enumerate(resp.evidence_chunks[:5], 1):
-            parts.append(f"  [{i}] ({ch.element_path}, {ch.similarity_score:.2f}) "
-                         f"{ch.text[:180]}...")
-    return "\n".join(parts)
+        response = runtime.query_pipeline.ask(request)
+        tool.finish(
+            "success" if not response.abstained else "abstained",
+            result_count=len(response.evidence_chunks),
+            citation_count=len(response.citations),
+        )
+        return _format_ask_response(response)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Error answering query: {exc}"
 
 
 @mcp.tool()
@@ -412,35 +429,51 @@ async def gsrs_similarity_search(
     Returns:
         Ranked similar substances with match scores.
     """
+    tool = _tool_call("gsrs_similarity_search")
     try:
-        substance = json.loads(substance_json)
-    except (json.JSONDecodeError, ValueError) as e:
-        return f"Error: invalid JSON — {e}"
+        if not runtime.retrieval_available():
+            reason = runtime.retrieval_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"Similarity search is currently unavailable: {reason}"
 
-    example = _extract_search_criteria(substance)
-    if not example:
-        return ("No searchable metadata found. Provide uuid, names, codes, "
-                "or classifications.")
+        try:
+            substance = json.loads(substance_json)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return f"Error: invalid JSON - {exc}"
 
-    results = vector_db.search_by_example(
-        example=example, top_k=top_k, mode=match_mode,
-    )
+        example = _extract_search_criteria(substance)
+        if not example:
+            return "No searchable metadata found. Provide uuid, names, codes, or classifications."
 
-    groups = _group_by_substance(results, exclude_self, example.get("uuid"))
-    if not groups:
-        return "No similar substances found."
+        results = runtime.vector_db.search_by_example(
+            example=example, top_k=top_k, mode=match_mode,
+        )
 
-    name = substance.get("names", [{}])[0].get("name", "substance")
-    lines = [f"Found {len(groups)} substance(s) similar to **{name}**:\n"]
-    for i, r in enumerate(groups, 1):
-        n = r.canonical_name or r.substance_uuid
-        lines.append(f"{i}. **{n}** (score {r.match_score:.2f})")
-        lines.append(f"   UUID: {r.substance_uuid}")
-        if r.matched_fields:
-            lines.append(f"   Matched: {', '.join(r.matched_fields[:5])}")
-        if r.chunks:
-            lines.append(f"   Chunks: {len(r.chunks)} — {r.chunks[0].text[:120]}...")
-    return "\n".join(lines)
+        groups = _group_by_substance(results, exclude_self, example.get("uuid"))
+        tool.finish("success", result_count=len(groups), citation_count=0)
+        if not groups:
+            return "No similar substances found."
+
+        name = substance.get("names", [{}])[0].get("name", "substance")
+        lines = [f"Found {len(groups)} substance(s) similar to **{name}**:\n"]
+        for i, result in enumerate(groups, 1):
+            substance_name = result.canonical_name or result.substance_uuid
+            lines.append(f"{i}. **{substance_name}** (score {result.match_score:.2f})")
+            lines.append(f"   UUID: {result.substance_uuid}")
+            if result.matched_fields:
+                lines.append(f"   Matched: {', '.join(result.matched_fields[:5])}")
+            if result.chunks:
+                lines.append(f"   Chunks: {len(result.chunks)} - {result.chunks[0].text[:120]}...")
+        return "\n".join(lines)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Similarity search error: {exc}"
 
 
 @mcp.tool()
@@ -448,6 +481,7 @@ async def gsrs_retrieve(
     query: str,
     top_k: int = 10,
     filters: Optional[str] = None,
+    debug: bool = False,
 ) -> str:
     """Semantic chunk retrieval — raw results, no AI answer.
 
@@ -459,16 +493,43 @@ async def gsrs_retrieve(
     Returns:
         Ranked text chunks with scores.
     """
-    qe = embedding_service.embed(query)
-    flt = json.loads(filters) if filters else None
-    results = vector_db.similarity_search(qe, top_k=top_k, filters=flt)
-    if not results:
-        return f"No results for '{query}'."
-    lines = [f"Found {len(results)} result(s) for '{query}':\n"]
-    for i, result in enumerate(results, 1):
-        t = result.document.text[:250] + ("..." if len(result.document.text) > 250 else "")
-        lines.append(f"{i}. {t}\n   Score: {result.score:.2f}  Section: {result.document.section}")
-    return "\n".join(lines)
+    tool = _tool_call("gsrs_retrieve")
+    try:
+        if not runtime.retrieval_available():
+            reason = runtime.retrieval_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"Retrieval is currently unavailable: {reason}"
+
+        parsed_filters = json.loads(filters) if filters else None
+        route_result = runtime.query_pipeline.identifier_router.route(query, top_k=top_k) if runtime.query_pipeline else None
+        if route_result is not None:
+            results = route_result.results
+            retrieval_mode = f"identifier-first:{route_result.route}"
+        else:
+            embedding = runtime.embedding_service.embed(query)
+            results = runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=parsed_filters)
+            retrieval_mode = "semantic"
+
+        tool.finish("success", result_count=len(results), citation_count=0)
+        if not results:
+            return f"No results for '{query}'."
+
+        lines = [f"Found {len(results)} result(s) for '{query}':\n"]
+        for i, result in enumerate(results, 1):
+            text = result.document.text[:250] + ("..." if len(result.document.text) > 250 else "")
+            lines.append(f"{i}. {text}\n   Score: {result.score:.2f}  Section: {result.document.section}")
+        if debug or settings.debug_mode:
+            lines.append(f"\nDebug: {json.dumps({'retrieval_mode': retrieval_mode, 'filters': parsed_filters}, indent=2)}")
+        return "\n".join(lines)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Retrieval error: {exc}"
 
 
 @mcp.tool()
@@ -483,25 +544,44 @@ async def gsrs_ingest(substance_json: str) -> str:
     Returns:
         Ingestion result.
     """
+    tool = _tool_call("gsrs_ingest")
     try:
-        substance = json.loads(substance_json)
-    except (json.JSONDecodeError, ValueError) as e:
-        return f"Error: invalid JSON — {e}"
-    from gsrs.model import Substance
-    sm = Substance.model_validate(substance)
-    chunks = chunker.chunk(sm)
-    if not chunks:
-        return "No chunks generated from substance."
-    texts = [str(c.text) for c in chunks]
-    embeddings = embedding_service.embed_batch(texts)
-    documents = []
-    for chunk, embedding in zip(chunks, embeddings):
-        chunk.set_embedding(embedding)
-        documents.append(chunk)
-    count = vector_db.upsert_documents(documents)
-    uid = str(getattr(sm, "uuid", "unknown"))
-    logger.info("Ingested %s: %d chunks", uid, count)
-    return f"Ingested **{uid}** — {count} chunks."
+        if not runtime.retrieval_available() or runtime.chunker is None:
+            reason = runtime.retrieval_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"Ingestion is currently unavailable: {reason}"
+
+        try:
+            substance = json.loads(substance_json)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return f"Error: invalid JSON - {exc}"
+
+        from gsrs.model import Substance
+
+        parsed_substance = Substance.model_validate(substance)
+        chunks = runtime.chunker.chunk(parsed_substance)
+        if not chunks:
+            return "No chunks generated from substance."
+
+        texts = [str(chunk.text) for chunk in chunks]
+        embeddings = runtime.embedding_service.embed_batch(texts)
+        documents = []
+        for chunk, embedding in zip(chunks, embeddings):
+            chunk.set_embedding(embedding)
+            documents.append(chunk)
+        count = runtime.vector_db.upsert_documents(documents)
+        uid = str(getattr(parsed_substance, "uuid", "unknown"))
+        tool.finish("success", result_count=count, citation_count=0)
+        return f"Ingested **{uid}** - {count} chunks."
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Ingestion error: {exc}"
 
 
 @mcp.tool()
@@ -514,34 +594,36 @@ async def gsrs_delete(substance_uuid: str) -> str:
     Returns:
         Deletion confirmation.
     """
-    count = vector_db.delete_documents_by_substance(UUID(substance_uuid))
-    logger.info("Deleted %s: %d chunks", substance_uuid, count)
-    return f"Deleted **{substance_uuid}** — {count} chunks removed."
+    tool = _tool_call("gsrs_delete")
+    try:
+        count = runtime.vector_db.delete_documents_by_substance(UUID(substance_uuid))
+        tool.finish("success", result_count=count, citation_count=0)
+        return f"Deleted **{substance_uuid}** - {count} chunks removed."
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Deletion error: {exc}"
 
 
 @mcp.tool()
 async def gsrs_health() -> str:
-    """Gateway health, model info, and database statistics."""
-    try:
-        stats = vector_db.get_statistics()
-    except Exception:
-        stats = {"total_chunks": 0, "total_substances": 0}
-    try:
-        mi = embedding_service.get_model_info()
-    except Exception:
-        mi = {}
-    lines = [
-        f"🟢 Database: {stats.get('total_chunks', 0)} chunks, "
-        f"{stats.get('total_substances', 0)} substances",
-        f"🤖 Model: {mi.get('model', 'N/A')} ({mi.get('dimension', '?')} dim)",
-    ]
-    return "\n".join(lines)
+    """Return structured runtime health and readiness information."""
+    tool = _tool_call("gsrs_health")
+    payload = runtime.get_status_payload()
+    tool.finish("success", result_count=0, citation_count=0)
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
 async def gsrs_statistics() -> str:
     """Return database statistics (chunk count, substance count)."""
-    return json.dumps(vector_db.get_statistics(), indent=2)
+    tool = _tool_call("gsrs_statistics")
+    try:
+        stats = runtime.vector_db.get_statistics()
+        tool.finish("success", result_count=0, citation_count=0)
+        return json.dumps(stats, indent=2)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Statistics error: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -567,33 +649,45 @@ async def gsrs_aggregation(
     Returns:
         Formatted aggregation result (counts, lists, summaries).
     """
-    rewriter = QueryRewriteService()
-    agg = AggregationService()
-    filter_builder = MetadataFilterBuilder()
+    tool = _tool_call("gsrs_aggregation")
+    try:
+        if not runtime.retrieval_available():
+            reason = runtime.retrieval_unavailable_reason()
+            tool.finish("degraded", result_count=0, citation_count=0, error_type="RuntimeUnavailable", error_message=reason)
+            return f"Aggregation is currently unavailable: {reason}"
 
-    rw = rewriter.rewrite(query)
-    queries = [rw.canonical_query] + rw.rewrites
-    applied_filters = filter_builder.build(inferred_filters=rw.filters)
+        rewriter = QueryRewriteService()
+        aggregator = AggregationService()
+        filter_builder = MetadataFilterBuilder()
 
-    all_candidates: Dict[str, Any] = {}
-    for q in queries:
-        emb = embedding_service.embed(q)
-        results = vector_db.similarity_search(emb, top_k=top_k, filters=applied_filters)
-        for r in results:
-            cid = r.document.chunk_id
-            if cid not in all_candidates:
-                all_candidates[cid] = (r.document, r.score)
+        rewrite_result = rewriter.rewrite(query)
+        queries = [rewrite_result.canonical_query] + rewrite_result.rewrites
+        applied_filters = filter_builder.build(inferred_filters=rewrite_result.filters)
 
-    if not all_candidates:
-        return f"No data found for aggregation query: **{query}**."
+        all_candidates: Dict[str, Any] = {}
+        for candidate_query in queries:
+            embedding = runtime.embedding_service.embed(candidate_query)
+            results = runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=applied_filters)
+            for result in results:
+                chunk_id = result.document.chunk_id
+                if chunk_id not in all_candidates:
+                    all_candidates[chunk_id] = (result.document, result.score)
 
-    sorted_candidates = sorted(all_candidates.values(), key=lambda x: x[1], reverse=True)[:top_k]
-    result = agg.aggregate(sorted_candidates, query, intent=rw.intent)
+        if not all_candidates:
+            tool.finish("abstained", result_count=0, citation_count=0)
+            return f"No data found for aggregation query: **{query}**."
 
-    if aggregation_type == "count":
-        return f"**{result.substance_name}** has **{result.total_count}** {result.aggregation_type}."
+        sorted_candidates = sorted(all_candidates.values(), key=lambda item: item[1], reverse=True)[:top_k]
+        result = aggregator.aggregate(sorted_candidates, query, intent=rewrite_result.intent)
+        tool.finish("success", result_count=len(sorted_candidates), citation_count=0)
 
-    return result.raw_text_summary
+        if aggregation_type == "count":
+            return f"**{result.substance_name}** has **{result.total_count}** {result.aggregation_type}."
+
+        return result.raw_text_summary
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Aggregation error: {exc}"
 
 
 @mcp.tool()
@@ -615,30 +709,36 @@ async def gsrs_query_optimizer(
     Returns:
         Optimised query variants.
     """
-    rewriter = QueryRewriteService()
-    rw = rewriter.rewrite(query)
+    tool = _tool_call("gsrs_query_optimizer")
+    try:
+        rewriter = QueryRewriteService()
+        rewrite_result = rewriter.rewrite(query)
 
-    lines = [f"**Original:** {query}", f"**Intent:** {rw.intent}", f"**Canonical:** {rw.canonical_query}"]
+        lines = [f"**Original:** {query}", f"**Intent:** {rewrite_result.intent}", f"**Canonical:** {rewrite_result.canonical_query}"]
 
-    if rw.filters:
-        lines.append(f"**Inferred filters:** {json.dumps(rw.filters, indent=2)}")
+        if rewrite_result.filters:
+            lines.append(f"**Inferred filters:** {json.dumps(rewrite_result.filters, indent=2)}")
 
-    if mode == "translate" and target_language != "en":
-        if llm_service:
-            translated = llm_service.complete_text(
-                system_prompt=f"Translate the following query to {target_language}. Return only the translation.",
-                user_prompt=query,
-                temperature=0.0,
-            )
-            lines.append(f"\n**Translated ({target_language}):** {translated}")
+        if mode == "translate" and target_language != "en":
+            if runtime.llm_service:
+                translated = runtime.llm_service.complete_text(
+                    system_prompt=f"Translate the following query to {target_language}. Return only the translation.",
+                    user_prompt=query,
+                    temperature=0.0,
+                )
+                lines.append(f"\n**Translated ({target_language}):** {translated}")
+            else:
+                lines.append("\n**Translation unavailable** (no LLM configured).")
         else:
-            lines.append(f"\n**Translation unavailable** (no LLM configured).")
-    else:
-        lines.append("\n**Query variants:**")
-        for i, v in enumerate(rw.rewrites, 1):
-            lines.append(f"  {i}. {v}")
+            lines.append("\n**Query variants:**")
+            for i, variant in enumerate(rewrite_result.rewrites, 1):
+                lines.append(f"  {i}. {variant}")
 
-    return "\n".join(lines)
+        tool.finish("success", result_count=len(rewrite_result.rewrites), citation_count=0)
+        return "\n".join(lines)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Query optimizer error: {exc}"
 
 
 @mcp.tool()
@@ -651,10 +751,13 @@ async def gsrs_get_document(substance_uuid: str) -> str:
     Returns:
         Full substance JSON or an error message.
     """
+    tool = _tool_call("gsrs_get_document")
     try:
-        doc = gsrs_api.get_substance_by_uuid(substance_uuid)
-    except Exception as e:
-        return f"Error fetching substance **{substance_uuid}**: {e}"
+        doc = runtime.gsrs_api.get_substance_by_uuid(substance_uuid)
+        tool.finish("success" if doc else "abstained", result_count=1 if doc else 0, citation_count=0)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Error fetching substance **{substance_uuid}**: {exc}"
 
     if doc is None:
         return f"Substance **{substance_uuid}** not found in GSRS API."
@@ -684,14 +787,17 @@ async def gsrs_api_search(
     Returns:
         Search results as formatted text with UUID, name, and substance class.
     """
+    tool = _tool_call("gsrs_api_search")
     try:
-        resp = gsrs_api.text_search(query, page=page, size=size, fields=fields or None)
-    except Exception as e:
-        return f"GSRS API search error: {e}"
+        resp = runtime.gsrs_api.text_search(query, page=page, size=size, fields=fields or None)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"GSRS API search error: {exc}"
 
     results = resp.get("results", [])
     total = resp.get("total", 0)
 
+    tool.finish("success" if results else "abstained", result_count=len(results), citation_count=0)
     if not results:
         return f"No results found for **{query}**."
 
@@ -731,17 +837,20 @@ async def gsrs_api_structure_search(
     if not smiles and not inchi:
         return "Error: provide either **smiles** or **inchi**."
 
+    tool = _tool_call("gsrs_api_structure_search")
     try:
-        resp = gsrs_api.structure_search(
+        resp = runtime.gsrs_api.structure_search(
             smiles=smiles or None,
             inchi=inchi or None,
             search_type=search_type,
             size=size,
         )
-    except Exception as e:
-        return f"GSRS structure search error: {e}"
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"GSRS structure search error: {exc}"
 
     results = resp.get("results", [])
+    tool.finish("success" if results else "abstained", result_count=len(results), citation_count=0)
     if not results:
         return f"No structures found for the given {smiles or inchi}."
 
@@ -781,17 +890,20 @@ async def gsrs_api_sequence_search(
     if not sequence or len(sequence) < 3:
         return "Error: sequence must be at least 3 characters."
 
+    tool = _tool_call("gsrs_api_sequence_search")
     try:
-        resp = gsrs_api.sequence_search(
+        resp = runtime.gsrs_api.sequence_search(
             sequence=sequence,
             search_type=search_type,
             sequence_type=sequence_type,
             size=size,
         )
-    except Exception as e:
-        return f"GSRS sequence search error: {e}"
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"GSRS sequence search error: {exc}"
 
     results = resp.get("results", [])
+    tool.finish("success" if results else "abstained", result_count=len(results), citation_count=0)
     if not results:
         return f"No sequence matches found for the given {sequence_type.lower()} sequence."
 

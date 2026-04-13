@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gsrs-rag-gateway"
+name = "gsrs-mcp-server"
 version = "0.1.0"
-description = "RAG (Retrieval-Augmented Generation) Gateway for GSRS (Global Substance Registration System) substances"
+description = "MCP server for GSRS substance retrieval, similarity search, and grounded answering"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -13,7 +13,7 @@ authors = [
 ]
 keywords = [
     "gsrs",
-    "rag",
+    "mcp",
     "vector-database",
     "embeddings",
     "pgvector",
@@ -75,12 +75,13 @@ ollama = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/epuzanov/gsrs-rag-gateway"
-Documentation = "https://github.com/epuzanov/gsrs-rag-gateway/tree/main/docs"
-Repository = "https://github.com/epuzanov/gsrs-rag-gateway"
-Issues = "https://github.com/epuzanov/gsrs-rag-gateway/issues"
+Homepage = "https://github.com/epuzanov/gsrs-mcp-server"
+Documentation = "https://github.com/epuzanov/gsrs-mcp-server/tree/main/docs"
+Repository = "https://github.com/epuzanov/gsrs-mcp-server"
+Issues = "https://github.com/epuzanov/gsrs-mcp-server/issues"
 
 [project.scripts]
+gsrs-mcp-server = "app.main:main"
 gsrs-gateway = "app.main:main"
 
 [tool.setuptools.packages.find]

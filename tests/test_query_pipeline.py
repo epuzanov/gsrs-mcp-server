@@ -8,13 +8,14 @@ from app.services.query_rewrite import QueryRewriteService, RewriteResult
 from app.services.metadata_filters import MetadataFilterBuilder
 from app.services.lexical_retrieval import LexicalRetriever
 from app.services.hybrid_retrieval import HybridRetriever
+from app.services.query_pipeline import QueryPipelineService
 from app.services.reranking import RerankerService
 from app.services.evidence import EvidenceExtractor, EvidenceResult
 from app.services.abstention import AbstentionPolicy, AbstentionDecision
 from app.services.answering import AnswerGenerator
 from app.services.aggregation import AggregationService, AggregationResult
 from app.models.db import VectorDocument
-from app.models.api import Citation
+from app.models.api import AskRequest, Citation
 
 
 class TestQueryRewriteService(unittest.TestCase):
@@ -476,6 +477,95 @@ class TestAnswerGenerator(unittest.TestCase):
         self.assertEqual(len(citations), 2)
 
 
+class _FailingEmbeddingService:
+    def __init__(self):
+        self.called = False
+
+    def embed(self, text):
+        self.called = True
+        raise AssertionError("Embedding should not be called for identifier-first routing")
+
+
+class _StaticVectorDb:
+    def __init__(self, results):
+        self._results = results
+
+    def search_by_example(self, example, top_k=20, mode="match"):
+        return self._results
+
+    def similarity_search(self, query_embedding, top_k=5, filters=None):
+        return []
+
+    def lexical_search(self, query, top_k=40, filters=None):
+        return []
+
+
+class TestIdentifierFirstQueryPipeline(unittest.TestCase):
+    def _make_result(self, text: str, metadata: dict) -> tuple:
+        doc = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=uuid4(),
+            section="codes",
+            text=text,
+            embedding=[0.0] * 384,
+            metadata_json=metadata,
+        )
+        return (doc, 1.0)
+
+    def test_identifier_first_hit_bypasses_embeddings_and_marks_degraded(self):
+        doc, score = self._make_result(
+            "UUID 0103a288-6eb6-4ced-b13a-849cd7edf028 belongs to Aspirin.",
+            {"uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028", "canonical_name": "Aspirin"},
+        )
+        vector_db = _StaticVectorDb([type("Result", (), {"document": doc, "score": score})()])
+        embedding = _FailingEmbeddingService()
+        pipeline = QueryPipelineService(
+            vector_db=vector_db,
+            embedding_service=embedding,
+            llm_service=None,
+            use_llm=False,
+            min_confidence=0.2,
+        )
+
+        response = pipeline.ask(
+            AskRequest(
+                query="0103a288-6eb6-4ced-b13a-849cd7edf028",
+                return_evidence=True,
+                debug=True,
+            )
+        )
+
+        self.assertFalse(embedding.called)
+        self.assertFalse(response.abstained)
+        self.assertTrue(response.degraded)
+        self.assertIn("identifier-first", response.debug["retrieval_mode"])
+
+    def test_identifier_first_miss_abstains_without_fuzzy_fallback(self):
+        vector_db = _StaticVectorDb([])
+        embedding = _FailingEmbeddingService()
+        pipeline = QueryPipelineService(
+            vector_db=vector_db,
+            embedding_service=embedding,
+            llm_service=None,
+            use_llm=False,
+            min_confidence=0.2,
+        )
+
+        response = pipeline.ask(
+            AskRequest(
+                query="0103a288-6eb6-4ced-b13a-849cd7edf028",
+                return_evidence=True,
+                debug=True,
+            )
+        )
+
+        self.assertFalse(embedding.called)
+        self.assertTrue(response.abstained)
+        self.assertIn("No relevant evidence", response.abstain_reason)
+        self.assertEqual(response.debug["deterministic_route"]["result_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -528,8 +618,8 @@ class TestExampleScripts(unittest.TestCase):
         )
         self.assertTrue(os.path.isfile(readme_path))
 
-    def test_gsrs_tool_uses_ask_endpoint(self):
-        """Test that gsrs_tool.py uses MCP tools and /ask endpoint."""
+    def test_gsrs_tool_uses_mcp_client(self):
+        """Test that gsrs_tool.py uses MCP client helpers instead of REST shims."""
         import os
         tool_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
@@ -538,12 +628,12 @@ class TestExampleScripts(unittest.TestCase):
         with open(tool_path, "r") as f:
             content = f.read()
         self.assertIn("gsrs_ask", content)
-        self.assertIn("gsrs_similarity_search", content)
-        self.assertIn("/ask", content)
+        self.assertIn("streamable_http_client", content)
+        self.assertIn("stdio_client", content)
         self.assertIn("mcp", content.lower())
 
-    def test_gsrs_function_supports_modes(self):
-        """Test that gsrs_function.py supports evidence and answer_assist modes."""
+    def test_gsrs_function_uses_mcp_transport(self):
+        """Test that gsrs_function.py uses MCP transport helpers."""
         import os
         func_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
@@ -551,9 +641,9 @@ class TestExampleScripts(unittest.TestCase):
         )
         with open(func_path, "r") as f:
             content = f.read()
-        self.assertIn("evidence", content)
-        self.assertIn("answer_assist", content)
-        self.assertIn("/ask", content)
+        self.assertIn("streamable_http_client", content)
+        self.assertIn("ClientSession", content)
+        self.assertIn("gsrs_ask", content)
 
     def test_system_prompt_non_empty(self):
         """Test that system prompt files are non-empty."""

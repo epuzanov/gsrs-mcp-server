@@ -140,6 +140,7 @@ class AskRequest(BaseModel):
     return_evidence: bool = Field(default=True, description="Whether to return evidence chunks")
     min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Minimum confidence threshold")
     substance_json: Optional[Dict[str, Any]] = Field(default=None, description="GSRS substance JSON for similarity search")
+    debug: bool = Field(default=False, description="Include internal routing and ranking details")
 
 
 class Citation(BaseModel):
@@ -162,6 +163,9 @@ class AskResponse(BaseModel):
     confidence: float
     abstained: bool
     abstain_reason: Optional[str] = None
+    degraded: bool = False
+    degraded_reason: Optional[str] = None
+    debug: Optional[Dict[str, Any]] = None
 
 
 # Similar substance search schemas

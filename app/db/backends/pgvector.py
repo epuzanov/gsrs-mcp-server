@@ -26,7 +26,7 @@ class PGVectorDatabase(VectorDatabase):
 
     def connect(self) -> None:
         """Establish connection to PostgreSQL."""
-        self.engine = create_engine(self.database_url)
+        self.engine = create_engine(self.database_url, pool_pre_ping=True)
         self.SessionLocal = sessionmaker(
             autocommit=False,
             autoflush=False,

@@ -17,6 +17,7 @@ from app.services.evidence import EvidenceExtractor, EvidenceResult
 from app.services.answering import AnswerGenerator
 from app.services.abstention import AbstentionPolicy, AbstentionDecision
 from app.services.aggregation import AggregationService, AggregationResult
+from app.services.identifier_routing import IdentifierRouter
 from app.services.vector_database import VectorDatabaseService
 from app.services.embedding import EmbeddingService
 from app.services.llm import LLMService
@@ -62,6 +63,7 @@ class QueryPipelineService:
             lexical_top_k=lexical_top_k,
             fused_top_k=fused_top_k,
         )
+        self.identifier_router = IdentifierRouter(vector_db=vector_db)
         self.reranker = RerankerService()
         self.aggregator = AggregationService()
         self.evidence_extractor = EvidenceExtractor(max_evidence_count=max_evidence)
@@ -73,11 +75,24 @@ class QueryPipelineService:
             min_confidence=min_confidence,
         )
 
+    def set_answer_generation_enabled(
+        self,
+        enabled: bool,
+        llm_service: Optional[LLMService] = None,
+    ) -> None:
+        """Enable or disable answer generation without rebuilding the pipeline."""
+        self.answer_generator.llm = llm_service
+        self.answer_generator.use_llm = enabled and llm_service is not None
+
     def ask(self, request: AskRequest) -> AskResponse:
         """Execute the full query pipeline."""
         # 1. Rewrite query
         rewrite_result = self.rewrite_service.rewrite(request.query)
         queries = [request.query] + rewrite_result.rewrites
+        debug_info: Dict[str, Any] = {
+            "canonical_query": rewrite_result.canonical_query,
+            "intent": rewrite_result.intent,
+        } if request.debug else {}
 
         # 2. Build metadata filters
         applied_filters = self.filter_builder.build(
@@ -86,12 +101,29 @@ class QueryPipelineService:
             sections=request.sections,
             inferred_filters=rewrite_result.filters,
         )
+        if request.debug:
+            debug_info["applied_filters"] = applied_filters
 
-        # 3. Run hybrid retrieval
-        candidates = self.hybrid_retriever.retrieve(
-            queries=queries,
-            filters=applied_filters,
-        )
+        # 3. Prefer deterministic identifier or exact-name routing when possible.
+        route_result = self.identifier_router.route(request.query, top_k=request.top_k)
+        routing_mode = "hybrid"
+        if route_result is not None:
+            routing_mode = f"identifier-first:{route_result.route}"
+            candidates = [(result.document, max(result.score, 0.99)) for result in route_result.results]
+            if request.debug:
+                debug_info["deterministic_route"] = {
+                    "route": route_result.route,
+                    "matched_value": route_result.matched_value,
+                    "result_count": len(route_result.results),
+                    "example": route_result.example,
+                }
+        else:
+            candidates = self.hybrid_retriever.retrieve(
+                queries=queries,
+                filters=applied_filters,
+            )
+        if request.debug:
+            debug_info["retrieval_mode"] = routing_mode
 
         # 4. Rerank
         reranked = self.reranker.rerank(
@@ -100,6 +132,16 @@ class QueryPipelineService:
             rewritten_queries=rewrite_result.rewrites,
             filters=applied_filters,
         )
+        if request.debug:
+            debug_info["reranked_chunks"] = [
+                {
+                    "chunk_id": doc.chunk_id,
+                    "document_id": str(doc.document_id),
+                    "section": doc.section,
+                    "score": round(score, 4),
+                }
+                for doc, score in reranked[:10]
+            ]
 
         # 5. Extract evidence
         evidence = self.evidence_extractor.extract(
@@ -107,6 +149,15 @@ class QueryPipelineService:
             query=request.query,
             intent=rewrite_result.intent,
         )
+        if request.debug:
+            debug_info["evidence"] = [
+                {
+                    "chunk_id": item.document.chunk_id,
+                    "section": item.citation.section,
+                    "score": round(item.score, 4),
+                }
+                for item in evidence
+            ]
 
         # 6. Evaluate abstention
         abstention = self.abstention_policy.evaluate(
@@ -134,6 +185,7 @@ class QueryPipelineService:
                 evidence=evidence,
                 abstention=abstention,
                 aggregation_result=aggregation_result,
+                debug_info=debug_info if request.debug else None,
             )
         else:
             return self._build_answer_response(
@@ -143,6 +195,7 @@ class QueryPipelineService:
                 evidence=evidence,
                 abstention=abstention,
                 aggregation_result=aggregation_result,
+                debug_info=debug_info if request.debug else None,
             )
 
     def _build_abstain_response(
@@ -153,6 +206,7 @@ class QueryPipelineService:
         evidence: List[EvidenceResult],
         abstention: AbstentionDecision,
         aggregation_result: Optional[AggregationResult] = None,
+        debug_info: Optional[Dict[str, Any]] = None,
     ) -> AskResponse:
         """Build response when abstaining."""
         evidence_chunks = []
@@ -177,6 +231,9 @@ class QueryPipelineService:
             confidence=abstention.confidence,
             abstained=True,
             abstain_reason=abstention.abstain_reason,
+            degraded=not self.answer_generator.use_llm,
+            degraded_reason=None if self.answer_generator.use_llm else "Answer generation provider unavailable; returning retrieval-only response.",
+            debug=debug_info,
         )
 
     def _build_answer_response(
@@ -187,6 +244,7 @@ class QueryPipelineService:
         evidence: List[EvidenceResult],
         abstention: AbstentionDecision,
         aggregation_result: Optional[AggregationResult] = None,
+        debug_info: Optional[Dict[str, Any]] = None,
     ) -> AskResponse:
         """Build response with answer."""
         # For aggregation queries, prefer structured result
@@ -227,6 +285,9 @@ class QueryPipelineService:
             confidence=abstention.confidence,
             abstained=False,
             abstain_reason=None,
+            degraded=not self.answer_generator.use_llm,
+            degraded_reason=None if self.answer_generator.use_llm else "Answer generation provider unavailable; returned retrieval-grounded fallback answer.",
+            debug=debug_info,
         )
 
     def _evidence_to_query_results(self, evidence: List[EvidenceResult]) -> List[QueryResult]:

@@ -4,6 +4,7 @@ GSRS MCP Server - ChromaDB Backend Implementation
 ChromaDB is a lightweight, embedded vector database perfect for
 development and testing. It requires no external server.
 """
+import os
 from typing import List, Dict, Any, Optional, TYPE_CHECKING, Sequence
 from uuid import UUID
 import json
@@ -44,11 +45,13 @@ class ChromaDatabase(VectorDatabase):
 
         # Reconstruct path with netloc (for cases like chroma://./path/collection)
         path = parsed.netloc + parsed.path
-        path = path.lstrip("/")
+        path = os.path.normpath(path.lstrip("/"))
 
         # Split path into directory and collection name
-        if "/" in path:
-            self.persist_directory, self.collection_name = path.rsplit("/", 1)
+        persist_directory, collection_name = os.path.split(path)
+        if persist_directory and collection_name:
+            self.persist_directory = persist_directory
+            self.collection_name = collection_name
         else:
             self.persist_directory = path or "./chroma_data"
             self.collection_name = "chunks"
@@ -59,6 +62,7 @@ class ChromaDatabase(VectorDatabase):
     def connect(self) -> None:
         """Initialize ChromaDB client."""
         # Use persistent storage
+        os.makedirs(self.persist_directory, exist_ok=True)
         self.client = chromadb.PersistentClient(
             path=self.persist_directory,
             settings=Settings(
@@ -97,17 +101,18 @@ class ChromaDatabase(VectorDatabase):
         if self.client is None:
             raise RuntimeError("Failed to connect to ChromaDB.")
 
-        # Delete existing collection to reset schema if needed
-        try:
-            self.client.delete_collection(self.collection_name)
-        except Exception:
-            pass
-
-        # Create collection with metadata
-        self.collection = self.client.create_collection(
+        # Preserve existing data across restarts and validate dimensions when possible.
+        self.collection = self.client.get_or_create_collection(
             name=self.collection_name,
             metadata={"dimension": dimension}
         )
+        existing_dimension = (self.collection.metadata or {}).get("dimension")
+        if existing_dimension and int(existing_dimension) != int(dimension):
+            raise RuntimeError(
+                "ChromaDB collection dimension mismatch: "
+                f"existing={existing_dimension}, configured={dimension}. "
+                "Use a fresh collection path or align EMBEDDING_DIMENSION."
+            )
     
     def upsert_documents(self, documents: List[VectorDocument]) -> int:
         """Insert or update documents."""

@@ -160,8 +160,10 @@ class RerankerService:
         for ident in identifiers:
             ident_lower = ident.lower()
             for term in query_terms:
-                if term == ident_lower or term in ident_lower or ident_lower in term:
-                    return 2.0  # Strong boost for exact identifier match
+                if term == ident_lower:
+                    return 3.0
+                if len(term) >= 4 and (term in ident_lower or ident_lower in term):
+                    return 2.0
         return 0.0
 
     def _check_name_match(self, metadata: Dict, query_terms: List[str]) -> float:
@@ -212,10 +214,24 @@ class RerankerService:
                     identifiers.append(code)
 
         # Check metadata_json for code-related fields
-        for key in ["cas", "unii", "pubchem", "drugbank", "chembl", "rxcui"]:
+        for key in [
+            "cas",
+            "unii",
+            "pubchem",
+            "drugbank",
+            "chembl",
+            "rxcui",
+            "uuid",
+            "approvalID",
+        ]:
             val = metadata.get(key)
             if val:
                 identifiers.append(str(val))
+
+        for key in ["reliable_codes", "all_codes"]:
+            values = metadata.get(key, {})
+            if isinstance(values, dict):
+                identifiers.extend(str(value) for value in values.values() if value)
 
         return identifiers
 

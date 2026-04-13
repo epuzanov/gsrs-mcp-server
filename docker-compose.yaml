@@ -51,7 +51,7 @@ services:
       GSRS_API_TIMEOUT: ${GSRS_API_TIMEOUT:-30}
       GSRS_API_VERIFY_SSL: ${GSRS_API_VERIFY_SSL:-true}
       GSRS_API_PUBLIC_ONLY: ${GSRS_API_PUBLIC_ONLY:-false}
-      # LLM API Configuration (for /ask endpoint)
+      # Optional LLM API configuration (used by gsrs_ask)
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_URL: ${LLM_URL:-https://api.openai.com/v1/chat/completions}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}

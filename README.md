@@ -1,538 +1,246 @@
 # GSRS MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://github.com/epuzanov/gsrs-rag-gateway/actions/workflows/tests.yml/badge.svg)](https://github.com/epuzanov/gsrs-rag-gateway/actions)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://github.com/epuzanov/gsrs-mcp-server/actions/workflows/tests.yml/badge.svg)](https://github.com/epuzanov/gsrs-mcp-server/actions)
 
-MCP (Model Context Protocol) server for GSRS (Global Substance Registration System) substances with **pgvector** or **ChromaDB** as vector database.
+`gsrs-mcp-server` is an MCP (Model Context Protocol) server for GSRS substance data. It supports `pgvector` or `ChromaDB`, OpenAI-compatible embedding providers, optional answer generation, and MCP tools for grounded retrieval, similarity search, ingest, and deletion.
 
-## Features
+## What It Exposes
 
-- 🧩 **Intelligent Chunking**: Automatic splitting of GSRS Substance JSON documents into element-based chunks
-- 🔍 **Vector Search**: Semantic search with pgvector (Production) or ChromaDB (Development)
-- 🤖 **MCP Tools**: `gsrs_ask`, `gsrs_similarity_search`, `gsrs_retrieve`, `gsrs_ingest`, `gsrs_delete`
-- 🎯 **Element Path IDs**: Unique IDs for chunks based on element paths
-- 📊 **Metadata Retention**: Complete metadata for each element in embeddings
-- 🔄 **SubstanceClass Filter**: Filtering by substance type (chemical, protein, nucleicAcid, etc.)
-- 🎨 **Embedding Provider**: OpenAI API, Azure OpenAI, Ollama and OpenAI-compatible APIs
-- 🔐 **Authentication**: HTTP Basic Auth and API Key support
-- 🗄️ **Multi-Backend**: pgvector (PostgreSQL) or ChromaDB (local, serverless)
-- 🐳 **Docker Deployment**: Easy deployment with Docker Compose
-- 📥 **Bulk Loading**: Loading script for JSONL files
-- ✅ **Unit Tests**: Complete test coverage with pytest
+- MCP transport: `streamable-http` on `/mcp`, or `stdio`
+- Health endpoints: `/livez`, `/readyz`, `/health`
+- MCP tools:
+  - `gsrs_ask`
+  - `gsrs_similarity_search`
+  - `gsrs_retrieve`
+  - `gsrs_ingest`
+  - `gsrs_delete`
+  - `gsrs_health`
+  - `gsrs_statistics`
+  - `gsrs_aggregation`
+  - `gsrs_query_optimizer`
+  - `gsrs_get_document`
+  - `gsrs_api_search`
+  - `gsrs_api_structure_search`
+  - `gsrs_api_sequence_search`
 
-## Architecture
+## Current Architecture
 
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   GSRS JSON     │────▶│  ChunkerService  │────▶│ EmbeddingService│
-│   (Substance)   │     │  (gsrs.model)    │     │ (OpenAI/Ollama) │
-└─────────────────┘     └──────────────────┘     └────────┬────────┘
-                                                          │
-                                                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Vector Database Backend                          │
-│  ┌─────────────────┐                   ┌─────────────────┐          │
-│  │   pgvector      │  (Production)     │    ChromaDB     │          │
-│  │  (PostgreSQL)   │◀─────────────────▶│  (Development)  │          │
-│  └─────────────────┘                   └─────────────────┘          │
-└─────────────────────────────────────────────────────────────────────┘
-                                                          │
-                                                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      FastAPI Application                            │
-│  ┌─────────────────┐                   ┌─────────────────┐          │
-│  │  /ingest        │                   │   /query        │          │
-│  │  /ingest/batch  │◀───────┬─────────▶│   /statistics   │          │
-│  │  /substances/*  │        │          │   /health       │          │
-│  └─────────────────┘        │          └─────────────────┘          │
-│                             │                                        │
-│  ┌─────────────────┐        │                                        │
-│  │  Auth Layer     │◀───────┘                                        │
-│  │  (Basic/API Key)│                                                 │
-│  └─────────────────┘                                                 │
-└─────────────────────────────────────────────────────────────────────┘
-```
+The server is MCP-first. `app/main.py` builds a `FastMCP` server, not a FastAPI REST application.
+
+Runtime flow:
+
+1. Startup builds a shared runtime with the configured vector backend, embedding client, optional LLM client, GSRS upstream client, and GSRS chunker.
+2. `/livez` reports process liveness only.
+3. `/readyz` reports whether the runtime is ready for retrieval and ingest.
+4. `gsrs_ask` uses query rewrite, metadata filter inference, identifier-first routing, hybrid retrieval, reranking, evidence extraction, abstention, and optional answer generation.
+5. If answer generation is unavailable, `gsrs_ask` degrades to retrieval-grounded fallback output instead of failing.
 
 ## Quick Start
 
-### Option 1: Production with PostgreSQL + pgvector (Docker)
+### 1. Install
 
 ```bash
-# Create .env file and configure
-cp .env.example .env
-# Edit .env and set:
-#   DATABASE_URL=postgresql://gsrs:your_password@postgres:5432/gsrs_rag
-#   EMBEDDING_API_KEY=sk-your-key
-
-# Start all services (PostgreSQL + MCP Server)
-docker-compose --profile postgres up -d
-
-# With Open WebUI (for Ollama integration)
-docker-compose --profile postgres --profile ollama up -d
-```
-
-### Option 2: Development with ChromaDB (Docker)
-
-```bash
-# Create .env file
-cp .env.example .env
-# DATABASE_URL is already preconfigured for ChromaDB
-
-# Start ChromaDB + MCP Server
-docker-compose --profile chroma up -d
-```
-
-### Option 3: Local Development (without Docker)
-
-```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
-
-# Install dependencies
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
-
-# Create .env file
-cp .env.example .env
-
-# Set EMBEDDING_API_KEY
-export EMBEDDING_API_KEY="sk-your-key"
-
-# Start gateway
-uvicorn app.main:app --reload
+copy .env.example .env
 ```
 
-### Authentication
+### 2. Configure `.env`
+
+Minimum required settings:
 
 ```bash
-# Default admin user
-# Username: admin
-# Password: admin123 (or change API_PASSWORD in .env)
-
-# Use API with authentication
-curl -u admin:admin123 http://localhost:8000/health
+DATABASE_URL=chroma://./chroma_data/chunks
+EMBEDDING_API_KEY=sk-your-key
+EMBEDDING_URL=https://api.openai.com/v1/embeddings
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIMENSION=1536
+API_PASSWORD=change-me
 ```
 
-### Check Health
+Optional LLM-backed answering:
 
 ```bash
+LLM_API_KEY=sk-your-key
+LLM_URL=https://api.openai.com/v1/chat/completions
+LLM_MODEL=gpt-4o-mini
+```
+
+### 3. Run the Server
+
+Streamable HTTP:
+
+```bash
+gsrs-mcp-server
+```
+
+Or stdio for local MCP clients:
+
+```bash
+set MCP_TRANSPORT=stdio
+gsrs-mcp-server
+```
+
+### 4. Check Health
+
+```bash
+curl http://localhost:8000/livez
+curl http://localhost:8000/readyz
 curl http://localhost:8000/health
 ```
 
-### Load Sample Data
+An empty but connected database is still considered ready.
 
-```bash
-# Load substances from GSRS server
-python scripts/load_data.py \
-  --uuids 0103a288-6eb6-4ced-b13a-849cd7edf028,80edf0eb-b6c5-4a9a-adde-28c7254046d9
+## Authentication
 
-# Check statistics
-curl -u admin:admin123 http://localhost:8000/statistics
-```
+When `API_USERNAME` and `API_PASSWORD` are set, the MCP endpoint uses bearer token verification based on `API_PASSWORD`.
 
-## API Endpoints
+- MCP HTTP auth: `Authorization: Bearer <API_PASSWORD>`
+- Health endpoints: no auth
+- Default credentials are for local development only
 
-### Health Check
+For stdio transport, auth is not used because the process is local.
 
-```bash
-GET /health
-```
+## MCP Client Examples
 
-### Ingest Substance
+### Claude Desktop / stdio
 
-```bash
-POST /ingest
-Content-Type: application/json
-Authorization: Basic YWRtaW46YWRtaW4xMjM=  # admin:admin123
-
+```json
 {
-    "substance": { /* GSRS Substance JSON */ }
+  "mcpServers": {
+    "gsrs": {
+      "command": "gsrs-mcp-server",
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "DATABASE_URL": "chroma://./chroma_data/chunks",
+        "EMBEDDING_API_KEY": "sk-your-key",
+        "EMBEDDING_URL": "https://api.openai.com/v1/embeddings",
+        "EMBEDDING_MODEL": "text-embedding-3-small",
+        "EMBEDDING_DIMENSION": "1536"
+      }
+    }
+  }
 }
 ```
 
-### Batch Ingest
+### Streamable HTTP
 
-```bash
-POST /ingest/batch
-Content-Type: application/json
-
+```json
 {
-    "substances": [ /* Array of GSRS Substance JSON */ ]
+  "mcpServers": {
+    "gsrs": {
+      "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer change-me"
+      }
+    }
+  }
 }
 ```
-
-### Semantic Search
-
-```bash
-POST /query
-Content-Type: application/json
-
-{
-    "query": "CAS code for Aspirin",
-    "top_k": 5,
-    "filters": {}  // optional metadata filters
-}
-```
-
-### Delete Substance
-
-```bash
-DELETE /substances/{substance_uuid}
-Authorization: Basic YWRtaW46YWRtaW4xMjM=
-```
-
-### Available Embedding Models
-
-```bash
-GET /models
-```
-
-### Substance Classes
-
-```bash
-GET /substance-classes
-```
-
-### Statistics
-
-```bash
-GET /statistics
-```
-
-## Configuration
-
-Environment variables (`.env` file):
-
-```bash
-# =============================================================================
-# DATABASE CONFIGURATION
-# =============================================================================
-# Database URL - Schema determines backend automatically:
-# - PostgreSQL: postgresql://user:pass@host:port/dbname
-# - ChromaDB: chroma://./chroma_data/chunks
-
-# For ChromaDB (Development/Testing - Default):
-DATABASE_URL=chroma://./chroma_data/chunks
-
-# For PostgreSQL (Production - uncomment):
-# DATABASE_URL=postgresql://gsrs:your_secure_password@localhost:5432/gsrs_rag
-
-# =============================================================================
-# EMBEDDING API CONFIGURATION
-# =============================================================================
-# Works with OpenAI, Azure OpenAI, Ollama and OpenAI-compatible APIs
-
-# OpenAI (Production):
-EMBEDDING_API_KEY=sk-your-api-key-here
-EMBEDDING_BASE_URL=https://api.openai.com/v1
-
-# Azure OpenAI (uncomment for Azure):
-# EMBEDDING_API_KEY=your-azure-key
-# EMBEDDING_BASE_URL=https://your-resource.openai.azure.com/openai/deployments/your-deployment
-
-# Ollama (Local/Development - uncomment for local embeddings):
-# EMBEDDING_API_KEY=ollama
-# EMBEDDING_BASE_URL=http://host.docker.internal:11434/v1
-
-# =============================================================================
-# EMBEDDING MODEL CONFIGURATION
-# =============================================================================
-# OpenAI models:
-#   - text-embedding-3-small (1536 dim, recommended)
-#   - text-embedding-3-large (3072 dim, highest quality)
-#   - text-embedding-ada-002 (1536 dim, legacy)
-
-# Ollama models:
-#   - nomic-embed-text (768 dim, lightweight)
-#   - mxbai-embed-large (1024 dim, high quality)
-#   - qwen3-embedding:latest (1024 dim, high quality)
-#   - all-minilm (384 dim, smallest)
-
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_DIMENSION=1536
-
-# For Ollama (uncomment for local embeddings):
-# EMBEDDING_MODEL=nomic-embed-text
-# EMBEDDING_DIMENSION=768
-
-# =============================================================================
-# AUTHENTICATION CONFIGURATION (HTTP Basic Auth)
-# =============================================================================
-# Change in Production!
-API_USERNAME=admin
-API_PASSWORD=admin123
-
-# =============================================================================
-# API CONFIGURATION
-# =============================================================================
-API_HOST=0.0.0.0
-API_PORT=8000
-DEFAULT_TOP_K=5
-```
-
-### Embedding Providers
-
-#### OpenAI (and compatible APIs)
-
-```bash
-EMBEDDING_PROVIDER=openai
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_DIMENSION=1536
-OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-**Supported models:**
-- `text-embedding-3-small` (1536 dim) - Fast and efficient
-- `text-embedding-3-large` (3072 dim) - Highest quality
-- `text-embedding-ada-002` (1536 dim) - Legacy
-
-**Azure OpenAI:**
-```bash
-EMBEDDING_API_KEY=your-azure-key
-EMBEDDING_BASE_URL=https://your-resource.openai.azure.com/openai/deployments/your-deployment
-```
-
-#### Ollama (Local Models)
-
-```bash
-EMBEDDING_API_KEY=ollama
-EMBEDDING_MODEL=nomic-embed-text
-EMBEDDING_DIMENSION=768
-EMBEDDING_BASE_URL=http://localhost:11434/v1
-```
-
-**Supported models:**
-- `nomic-embed-text` (768 dim)
-- `mxbai-embed-large` (1024 dim)
-- `qwen3-embedding:latest` (1024 dim, high quality)
-- `all-minilm` (384 dim, smallest)
-- And all other Ollama embedding models
 
 ## Loading Data
 
-### From JSON Files
+Use the bundled loader:
 
 ```bash
-curl -X POST http://localhost:8000/ingest \
-    -H "Content-Type: application/json" \
-    -u admin:admin123 \
-    -d @substance.json
+python scripts/load_data.py --uuids 0103a288-6eb6-4ced-b13a-849cd7edf028
 ```
 
-### From .gsrs Files (JSONL.gz)
+Or ingest through MCP with `gsrs_ingest`.
+
+## Health and Readiness Semantics
+
+- `/livez`: process is running
+- `/readyz`: runtime is initialized and retrieval dependencies are usable
+- `/health`: combined snapshot with component state and light in-memory metrics
+
+Readiness depends on:
+
+- vector backend initialization
+- embedding provider configuration, and optional active probing if `STARTUP_VALIDATE_EXTERNAL=true`
+- chunker initialization
+- query pipeline construction
+
+Optional components:
+
+- answer generation provider
+- GSRS upstream API tools
+
+If optional components are unavailable, the server stays up and reports a degraded state.
+
+## Debug and Observability
+
+Structured JSON logs include fields such as:
+
+- `request_id`
+- `tool_name`
+- `backend`
+- `latency_ms`
+- `outcome`
+- `error_type`
+- `result_count`
+- `citation_count`
+
+Set `DEBUG_MODE=true` to include extra runtime detail. You can also pass `debug=true` to `gsrs_ask` or `gsrs_retrieve` for internal diagnostics such as:
+
+- query normalization
+- deterministic identifier routing
+- reranked chunk IDs and scores
+- applied filters
+- degraded answer-generation state
+
+Sensitive values such as API keys are not logged.
+
+## Docker
 
 ```bash
-python scripts/load_data.py data/substances.gsrs --batch-size 100
+docker-compose --profile chroma up -d
+docker-compose --profile postgres up -d
 ```
 
-### Open WebUI Integration
+The server container exposes `http://localhost:8000/mcp`.
 
-```bash
-# Start with Open WebUI profile
-docker-compose --profile ollama up -d
+## Repository Layout
 
-# Open Open WebUI in browser
-# http://localhost:3000
+```text
+app/
+  main.py                MCP server and health routes
+  runtime.py             Startup validation and shared runtime state
+  db/                    pgvector and ChromaDB backends
+  services/              retrieval, reranking, answering, GSRS API, embeddings
+docs/
+examples/
+scripts/
+tests/
 ```
 
-## Chunking Strategy
+## Known Limitations / Future Work
 
-Each GSRS substance document is split into chunks based on element paths:
-
-### Example
-
-**Input JSON:**
-```json
-{
-    "uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028",
-    "substanceClass": "chemical",
-    "codes": [
-        {
-            "code": "WK2XYI10QM",
-            "codeSystem": "FDA UNII"
-        },
-        {
-            "code": "CHEMBL521",
-            "codeSystem": "ChEMBL"
-        }
-    ]
-}
-```
-
-**Created Chunks:**
-| Element Path | Chunk Text | Metadata |
-|--------------|------------|----------|
-| `root_codes_0_code` | code: WK2XYI10QM | {codeSystem: FDA UNII} |
-| `root_codes_0_codeSystem` | codeSystem: FDA UNII | {} |
-| `root_codes_1_code` | code: CHEMBL521 | {codeSystem: ChEMBL} |
-| `root_codes_1_codeSystem` | codeSystem: ChEMBL | {} |
+- Startup validation defaults to configuration checks for external providers; set `STARTUP_VALIDATE_EXTERNAL=true` for active probes.
+- The metrics layer is intentionally lightweight and in-memory.
+- Retrieval ranking is conservative and still heuristic-heavy.
+- Example integrations focus on MCP usage rather than a polished Open WebUI package.
+- CI covers smoke and failure modes, but not long-running backend soak tests.
 
 ## Development
 
-### Local Development without Docker
-
 ```bash
-# Install PostgreSQL with pgvector
-# Ubuntu: sudo apt install postgresql-16-pgvector
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Create .env file
-cp .env.example .env
-
-# Set OPENAI_API_KEY (for OpenAI embeddings)
-export OPENAI_API_KEY="sk-..."
-
-# Create database
-createdb -U postgres gsrs_rag
-
-# Start app
-uvicorn app.main:app --reload
+python -m pytest tests -v
+python -m compileall app tests
 ```
 
-### Tests
+## Changelog
 
-```bash
-# Unit tests for Vector Database Backends
-python -m pytest tests/ -v
+See [CHANGELOG.md](CHANGELOG.md).
 
-# Only ChromaDB tests
-python -m pytest tests/test_vector_db.py -v
+## Documentation
 
-# Chunking tests
-python -m pytest tests/test_chunking.py -v
-```
-
-## Project Structure
-
-```
-gsrs-rag-gateway/
-├── app/
-│   ├── __init__.py
-│   ├── config.py              # Configuration
-│   ├── main.py                # FastAPI app
-│   ├── models/
-│   |   ├── __init__.py
-│   │   ├── api.py             # API models
-│   │   └── db.py              # SQLAlchemy models
-│   ├── db/
-│   |   ├── __init__.py
-│   │   ├── base.py            # Vector Database Interface
-│   │   ├── factory.py         # Backend Factory
-│   │   └── backends/
-│   |       ├── __init__.py
-│   │       ├── chroma.py      # ChromaDB Backend
-│   │       └── pgvector.py    # pgvector Backend
-│   └── services/
-│       ├── __init__.py
-│       ├── chunking.py        # ChunkerService
-│       ├── embedding.py       # EmbeddingService
-│       └── vector_database.py # VectorDatabaseService
-├── scripts/
-│   └──load_data.py            # Loading script for .gsrs files
-├── examples/
-│   ├── gsrs_function.py       # ollama function script
-│   └── gsrs_tool.py           # ollama tools script
-├── tests/
-│   ├── test_chunking.py
-│   ├── test_load_data.py
-│   └── test_vector_db.py
-├── docs/
-│   ├── api-reference.md
-│   ├── authentication.md
-│   ├── configuration.md
-│   ├── data-loading.md
-│   ├── quickstart.md
-│   ├── README.md
-│   ├── troubleshooting.md
-│   ├── vector-databases.md
-│   └── guides/
-│       ├── chunking.md
-│       ├── chatgpt.md
-│       └── ollama-open-webui.md
-├── .env.example
-├── .gitignore
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-├── CONTRIBUTING.md
-├── docker-compose.yaml
-├── Dockerfile
-├── LICENSE
-├── pyproject.toml
-├── README.md
-├── requirements-examples.txt
-└── requirements.txt
-```
-
-## API Documentation
-
-Full API documentation is available in Swagger UI:
-
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-## Troubleshooting
-
-### Database Connection Failed
-
-```bash
-# Check PostgreSQL logs
-docker-compose logs postgres
-
-# Test connection
-docker-compose exec postgres pg_isready -U gsrs
-```
-
-### Embedding API Errors (OpenAI)
-
-```bash
-# Check API key
-echo $EMBEDDING_API_KEY
-
-# Test API availability
-curl https://api.openai.com/v1/models \
-  -H "Authorization: Bearer $EMBEDDING_API_KEY"
-```
-
-### Embedding API Errors (Ollama)
-
-```bash
-# Check Ollama status
-curl http://localhost:11434/api/tags
-
-# Pull model
-ollama pull nomic-embed-text
-```
-
-### Vector Search Returns No Results
-
-```bash
-# Check if data is loaded
-curl http://localhost:8000/statistics
-
-# Check substance classes
-curl http://localhost:8000/substance-classes
-```
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file.
-
-## Contributing
-
-Contributions are welcome! Please create an issue or pull request for improvements.
-
-## Links
-
-- [GitHub Repository](https://github.com/epuzanov/gsrs-rag-gateway)
-- [GSRS Model Library](https://github.com/epuzanov/gsrs.model)
-- [pgvector](https://github.com/pgvector/pgvector)
-- [ChromaDB](https://docs.trychroma.com/)
+- [docs/README.md](docs/README.md)
+- [docs/quickstart.md](docs/quickstart.md)
+- [docs/configuration.md](docs/configuration.md)
+- [docs/authentication.md](docs/authentication.md)
+- [docs/api-reference.md](docs/api-reference.md)
+- [docs/guides/mcp.md](docs/guides/mcp.md)

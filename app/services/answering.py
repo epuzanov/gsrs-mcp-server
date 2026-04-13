@@ -125,17 +125,19 @@ Answer the question using only the evidence above. Cite each claim with [1], [2]
         citations = [e.citation for e in evidence if e.score > 0.3]
 
         if len(evidence) == 1:
-            # Single evidence
             e = evidence[0]
-            answer = f"Based on the GSRS record [{e.citation.section}]: {e.snippet or e.document.text[:500]}"
+            answer = (
+                "Direct answer:\n"
+                f"{e.snippet or e.document.text[:500]}\n\n"
+                f"Supporting section: {e.citation.section}"
+            )
         else:
-            # Multiple evidence - synthesize
             parts = []
             for i, e in enumerate(evidence[:5], 1):
                 snippet = (e.snippet or e.document.text[:300]).strip()
                 parts.append(f"[{i}] ({e.citation.section}): {snippet}")
 
-            answer = "Based on GSRS evidence:\n\n" + "\n\n".join(parts)
+            answer = "Supporting evidence:\n\n" + "\n\n".join(parts)
 
         return answer, citations
 

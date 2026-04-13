@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     embedding_dimension: int = int(os.getenv("EMBEDDING_DIMENSION", "1536"))
     embedding_verify_ssl: bool = _get_bool_env("EMBEDDING_VERIFY_SSL", True)
+    embedding_timeout: float = float(os.getenv("EMBEDDING_TIMEOUT", "30"))
+    embedding_max_retries: int = int(os.getenv("EMBEDDING_MAX_RETRIES", "2"))
+    embedding_retry_backoff_ms: int = int(os.getenv("EMBEDDING_RETRY_BACKOFF_MS", "250"))
 
     # SubstanceChunker Configuration (ChunkerConfig fine-tuning)
     # See gsrs.services.ai.ChunkerConfig
@@ -69,8 +72,8 @@ class Settings(BaseSettings):
     chunker_include_grouped_relationship_summaries: bool = _get_bool_env("CHUNKER_INCLUDE_GROUPED_RELATIONSHIP_SUMMARIES", True)
 
     # API
-    api_host: str = os.getenv("API_HOST", "0.0.0.0")
-    api_port: int = int(os.getenv("API_PORT", "8000"))
+    api_host: str = os.getenv("MCP_HOST", os.getenv("API_HOST", "0.0.0.0"))
+    api_port: int = int(os.getenv("MCP_PORT", os.getenv("API_PORT", "8000")))
 
     # Authentication
     api_username: str = os.getenv("API_USERNAME", "admin")
@@ -85,6 +88,8 @@ class Settings(BaseSettings):
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
     llm_verify_ssl: bool = _get_bool_env("LLM_VERIFY_SSL", True)
     llm_timeout: int = int(os.getenv("LLM_TIMEOUT", "30"))
+    llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "1"))
+    llm_retry_backoff_ms: int = int(os.getenv("LLM_RETRY_BACKOFF_MS", "250"))
 
     # Similar Substance Search - Reliable identifier codes (prioritized)
     similarity_reliable_codes: list[str] = _get_list_env(
@@ -97,6 +102,15 @@ class Settings(BaseSettings):
     gsrs_api_timeout: int = int(os.getenv("GSRS_API_TIMEOUT", "30"))
     gsrs_api_verify_ssl: bool = _get_bool_env("GSRS_API_VERIFY_SSL", True)
     gsrs_api_public_only: bool = _get_bool_env("GSRS_API_PUBLIC_ONLY", False)
+    gsrs_api_max_retries: int = int(os.getenv("GSRS_API_MAX_RETRIES", "1"))
+    gsrs_api_retry_backoff_ms: int = int(os.getenv("GSRS_API_RETRY_BACKOFF_MS", "250"))
+
+    # Runtime/observability
+    debug_mode: bool = _get_bool_env("DEBUG_MODE", False)
+    startup_validate_external: bool = _get_bool_env("STARTUP_VALIDATE_EXTERNAL", False)
+    request_timeout: float = float(os.getenv("REQUEST_TIMEOUT", "30"))
+    answer_confidence_threshold: float = float(os.getenv("ANSWER_CONFIDENCE_THRESHOLD", "0.35"))
+    max_answer_evidence: int = int(os.getenv("MAX_ANSWER_EVIDENCE", "5"))
 
 
 settings = Settings()

@@ -2,6 +2,7 @@
 GSRS MCP Server - Vector Database Service
 Unified service layer for vector database operations.
 """
+from urllib.parse import urlparse
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
 
@@ -33,6 +34,18 @@ class VectorDatabaseService(VectorDatabase):
         self._db: Optional[VectorDatabase] = None
         self._kwargs = kwargs
 
+    @property
+    def backend_name(self) -> str:
+        """Return the configured backend name."""
+        if not self._database_url:
+            return "unknown"
+        scheme = urlparse(self._database_url).scheme.lower()
+        if scheme == "postgresql":
+            return "pgvector"
+        if scheme == "chroma":
+            return "chroma"
+        return scheme or "unknown"
+
     def _ensure_db(self) -> VectorDatabase:
         """Lazy-load the database connection."""
         if self._db is None:
@@ -42,7 +55,7 @@ class VectorDatabaseService(VectorDatabase):
 
     def connect(self) -> None:
         """Establish connection to the database."""
-        self._ensure_db().connect()
+        self._ensure_db()
 
     def disconnect(self) -> None:
         """Close connection to the database."""

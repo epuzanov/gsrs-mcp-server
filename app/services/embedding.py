@@ -3,6 +3,7 @@ GSRS MCP Server - OpenAI Embeddings Service
 
 Simple OpenAI-compatible embeddings service.
 """
+import time
 from typing import Any, List
 
 import httpx
@@ -25,6 +26,9 @@ class EmbeddingService:
         url: str = "https://api.openai.com/v1/embeddings",
         dimension: int = 1536,
         verify_ssl: bool = True,
+        timeout: float = 60.0,
+        max_retries: int = 2,
+        retry_backoff_ms: int = 250,
     ):
         """
         Initialize embeddings service.
@@ -41,13 +45,16 @@ class EmbeddingService:
         self.url = url.rstrip("/")
         self.dimension = dimension
         self.verify_ssl = verify_ssl
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff_ms = retry_backoff_ms
         self._client: httpx.Client | None = None
 
     @property
     def client(self) -> httpx.Client:
         """Get or create HTTP client."""
         if self._client is None:
-            self._client = httpx.Client(timeout=60.0, verify=self.verify_ssl)
+            self._client = httpx.Client(timeout=self.timeout, verify=self.verify_ssl)
         return self._client
 
     def _headers(self) -> dict[str, str]:
@@ -81,12 +88,7 @@ class EmbeddingService:
 
     def embed(self, text: str) -> List[float]:
         """Generate embedding for a single text."""
-        response = self.client.post(
-            self.url,
-            headers=self._headers(),
-            json=self._build_payload(text),
-        )
-        response.raise_for_status()
+        response = self._post_with_retry(self._build_payload(text))
         return self._parse_embeddings(response.json())[0]
 
     def embed_batch(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
@@ -98,15 +100,31 @@ class EmbeddingService:
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            response = self.client.post(
-                self.url,
-                headers=self._headers(),
-                json=self._build_payload(batch),
-            )
-            response.raise_for_status()
+            response = self._post_with_retry(self._build_payload(batch))
             embeddings.extend(self._parse_embeddings(response.json()))
 
         return embeddings
+
+    def _post_with_retry(self, payload: dict[str, Any]) -> httpx.Response:
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.client.post(
+                    self.url,
+                    headers=self._headers(),
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response
+            except (httpx.HTTPError, ValueError) as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                time.sleep(self.retry_backoff_ms / 1000)
+
+        raise RuntimeError(
+            f"Embedding request failed after {self.max_retries + 1} attempt(s): {last_error}"
+        ) from last_error
 
     def get_model_info(self) -> dict:
         """Get model information."""
@@ -116,6 +134,7 @@ class EmbeddingService:
             "dimension": self.dimension,
             "url": self.url,
             "verify_ssl": self.verify_ssl,
+            "timeout": self.timeout,
         }
 
     def close(self):
