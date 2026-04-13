@@ -89,13 +89,14 @@ class JsonLogFormatter(logging.Formatter):
         return json.dumps(_sanitize_for_logging(payload), default=str)
 
 
-def configure_logging(debug: bool = False) -> None:
+def configure_logging(debug: bool = False, *, use_stderr: bool = False) -> None:
     """Configure root logging once for structured JSON output."""
     root_logger = logging.getLogger()
     if getattr(root_logger, "_gsrs_logging_configured", False):
         return
 
-    handler = logging.StreamHandler(sys.stdout)
+    stream = sys.stderr if use_stderr else sys.stdout
+    handler = logging.StreamHandler(stream)
     handler.setFormatter(JsonLogFormatter())
 
     root_logger.handlers.clear()

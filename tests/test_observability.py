@@ -1,9 +1,10 @@
 """Tests for structured logging helpers."""
 import json
 import logging
+import sys
 import unittest
 
-from app.observability import InMemoryMetrics, JsonLogFormatter, ToolTelemetry
+from app.observability import InMemoryMetrics, JsonLogFormatter, ToolTelemetry, configure_logging
 
 
 class _CaptureHandler(logging.Handler):
@@ -93,3 +94,23 @@ class TestObservability(unittest.TestCase):
         self.assertEqual(payload["headers"]["Authorization"], "[REDACTED]")
         self.assertEqual(payload["debug"]["token"], "[REDACTED]")
         self.assertEqual(payload["debug"]["safe"], "value")
+
+    def test_configure_logging_uses_stderr_for_stdio_transport(self):
+        root_logger = logging.getLogger()
+        original_handlers = list(root_logger.handlers)
+        original_level = root_logger.level
+        original_flag = getattr(root_logger, "_gsrs_logging_configured", False)
+
+        if hasattr(root_logger, "_gsrs_logging_configured"):
+            delattr(root_logger, "_gsrs_logging_configured")
+        root_logger.handlers.clear()
+
+        try:
+            configure_logging(use_stderr=True)
+            self.assertEqual(len(root_logger.handlers), 1)
+            self.assertIs(root_logger.handlers[0].stream, sys.stderr)
+        finally:
+            root_logger.handlers.clear()
+            root_logger.handlers.extend(original_handlers)
+            root_logger.setLevel(original_level)
+            root_logger._gsrs_logging_configured = original_flag  # type: ignore[attr-defined]

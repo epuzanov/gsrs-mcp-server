@@ -179,6 +179,57 @@ class TestIngestBatchViaMCP(unittest.TestCase):
         self.assertEqual(result["successful"], 0)
         self.assertEqual(result["failed"], 1)
 
+    def test_ingest_batch_via_mcp_retries_taskgroup_http_session_error(self):
+        """HTTP ingest retries once with a fresh session after a client-side TaskGroup error."""
+        seen = {"retry_calls": 0}
+
+        class PrimaryClient:
+            connection = MCPConnectionSettings(
+                transport="http",
+                mcp_url=TestIngestBatchViaMCP.MCP_URL,
+                command="gsrs-mcp-server",
+                verify_ssl=True,
+                bearer_token="token",
+            )
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def ensure_ingest_available(self):
+                return None
+
+            async def ingest_substance(self, substance):
+                raise RuntimeError("unhandled errors in a TaskGroup (1 sub-exception)")
+
+        class RetryClient:
+            connection = PrimaryClient.connection
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def ingest_substance(self, substance):
+                seen["retry_calls"] += 1
+                return f"Ingested **{substance['uuid']}** - 4 chunks."
+
+        with patch("scripts.load_data.build_mcp_client", side_effect=[PrimaryClient(), RetryClient()]):
+            result = ingest_batch_via_mcp(
+                self.MCP_URL,
+                True,
+                [{"uuid": "retry-me"}],
+                bearer_token="token",
+            )
+
+        self.assertEqual(result["successful"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["total_chunks"], 4)
+        self.assertEqual(seen["retry_calls"], 1)
+
     def test_load_from_file_with_mcp(self):
         """Test file loading reuses one MCP client."""
         seen = {"ingest_calls": []}
@@ -427,6 +478,73 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["successful"], 2)
         self.assertEqual(seen["async_verify"], [False])
         self.assertEqual(len(seen["mcp_calls"]), 2)
+
+    async def test_load_substances_from_api_skips_statistics_after_taskgroup_error(self):
+        """A failing gsrs_statistics call should not prevent later ingestion attempts."""
+        seen = {"mcp_calls": []}
+
+        class FakeAsyncResponse:
+            def __init__(self, payload, status_code=200):
+                self._payload = payload
+                self.status_code = status_code
+
+            def json(self):
+                return self._payload
+
+        class FakeAsyncClient:
+            def __init__(self, *, timeout, verify):
+                self.verify = verify
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, timeout=30.0, params=None):
+                substance_uuid = url.split("(")[-1].split(")")[0]
+                return FakeAsyncResponse({"uuid": substance_uuid})
+
+        class FakeClient:
+            connection = MCPConnectionSettings(
+                transport="http",
+                mcp_url="http://localhost:8000/mcp",
+                command="gsrs-mcp-server",
+                verify_ssl=False,
+                bearer_token="token",
+            )
+            _tool_names = {"gsrs_ingest", "gsrs_health", "gsrs_statistics"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def ensure_ingest_available(self):
+                return None
+
+            async def get_statistics(self):
+                raise RuntimeError("unhandled errors in a TaskGroup (1 sub-exception)")
+
+            async def ingest_substance(self, substance):
+                seen["mcp_calls"].append(substance.get("uuid"))
+                return f"Ingested **{substance['uuid']}** - 1 chunks."
+
+        with patch("scripts.load_data.httpx.AsyncClient", FakeAsyncClient), \
+             patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):
+            result = await load_substances_from_api(
+                mcp_url="http://localhost:8000/mcp",
+                uuids=["uuid-1"],
+                batch_size=1,
+                dry_run=False,
+                verify_ssl=False,
+                bearer_token="token",
+            )
+
+        self.assertEqual(result["successful"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(seen["mcp_calls"], ["uuid-1"])
 
 
 if __name__ == "__main__":

@@ -272,6 +272,16 @@ class MCPToolClient:
             {"substance_json": json.dumps(substance)},
         )
 
+    async def ingest_uuid(self, substance_uuid: str) -> str:
+        self._require_tool("gsrs_ingest_from_uuid")
+        return await self.call_tool_text(
+            "gsrs_ingest_from_uuid",
+            {"substance_uuid": substance_uuid},
+        )
+
+    def supports_uuid_ingest(self) -> bool:
+        return "gsrs_ingest_from_uuid" in self._tool_names
+
     def _require_session(self) -> ClientSession:
         if self._session is None:
             raise RuntimeError("MCP session has not been initialized.")
@@ -320,6 +330,82 @@ def build_mcp_client(
     )
 
 
+def _is_retryable_http_session_error(client: MCPToolClient, exc: Exception) -> bool:
+    """Detect client-side HTTP session failures that merit a fresh-session retry."""
+    connection = getattr(client, "connection", None)
+    if connection is None or getattr(connection, "transport", None) != "http":
+        return False
+
+    message = str(exc).lower()
+    retry_markers = (
+        "taskgroup",
+        "closedresourceerror",
+        "closed resource",
+        "readerror",
+        "remoteprotocolerror",
+        "stream closed",
+    )
+    return any(marker in message for marker in retry_markers)
+
+
+async def _ingest_with_fresh_client(
+    client: MCPToolClient,
+    substance: dict[str, Any],
+) -> str:
+    """Retry a single ingest with a fresh MCP HTTP session."""
+    logger.warning(
+        "Retrying ingest for %s with a fresh MCP session.",
+        substance.get("uuid", "unknown substance"),
+    )
+    async with build_mcp_client(
+        transport=client.connection.transport,
+        mcp_url=client.connection.mcp_url,
+        command=client.connection.command,
+        verify_ssl=client.connection.verify_ssl,
+        bearer_token=client.connection.bearer_token,
+    ) as retry_client:
+        return await retry_client.ingest_substance(substance)
+
+
+async def _ingest_uuid_with_fresh_client(
+    client: MCPToolClient,
+    substance_uuid: str,
+) -> str:
+    """Retry a UUID ingest with a fresh MCP HTTP session."""
+    logger.warning("Retrying ingest for %s with a fresh MCP session.", substance_uuid)
+    async with build_mcp_client(
+        transport=client.connection.transport,
+        mcp_url=client.connection.mcp_url,
+        command=client.connection.command,
+        verify_ssl=client.connection.verify_ssl,
+        bearer_token=client.connection.bearer_token,
+    ) as retry_client:
+        return await retry_client.ingest_uuid(substance_uuid)
+
+
+async def _log_statistics_if_available(client: MCPToolClient) -> None:
+    """Best-effort statistics fetch for operator visibility."""
+    tool_names = getattr(client, "_tool_names", None)
+    if tool_names is not None and "gsrs_statistics" not in tool_names:
+        return
+    if not hasattr(client, "get_statistics"):
+        return
+
+    try:
+        statistics = await client.get_statistics()
+    except Exception as exc:
+        if _is_retryable_http_session_error(client, exc):
+            logger.warning("Skipping gsrs_statistics after HTTP MCP session error: %s", exc)
+            return
+        raise
+
+    logger.info(
+        "MCP Server: %s chunks, %s substances",
+        statistics.get("total_chunks", 0),
+        statistics.get("total_substances", 0),
+    )
+
+
 def _empty_stats(include_downloaded: bool = False) -> dict[str, Any]:
     stats: dict[str, Any] = {
         "total_substances": 0,
@@ -361,11 +447,79 @@ async def _ingest_substance_batch(
             successful += 1
             total_chunks += chunk_count
         except Exception as exc:
-            failed += 1
-            errors.append(f"Substance {substance_label}: {exc}")
+            retry_result: str | None = None
+            if _is_retryable_http_session_error(client, exc):
+                try:
+                    retry_result = await _ingest_with_fresh_client(client, substance)
+                except Exception as retry_exc:
+                    failed += 1
+                    errors.append(f"Substance {substance_label}: {retry_exc}")
+                    continue
+            else:
+                failed += 1
+                errors.append(f"Substance {substance_label}: {exc}")
+                continue
+
+            chunk_count = _parse_ingest_result(retry_result)
+            if chunk_count is None:
+                failed += 1
+                errors.append(f"Substance {substance_label}: {retry_result}")
+                continue
+            successful += 1
+            total_chunks += chunk_count
 
     return {
         "total_substances": len(substances),
+        "total_chunks": total_chunks,
+        "successful": successful,
+        "failed": failed,
+        "errors": errors,
+    }
+
+
+async def _ingest_uuid_batch(
+    client: MCPToolClient,
+    uuids: list[str],
+) -> dict[str, Any]:
+    successful = 0
+    failed = 0
+    total_chunks = 0
+    errors: list[str] = []
+
+    for substance_uuid in uuids:
+        try:
+            result = await client.ingest_uuid(substance_uuid)
+            chunk_count = _parse_ingest_result(result)
+            if chunk_count is None:
+                failed += 1
+                errors.append(f"Substance {substance_uuid}: {result}")
+                continue
+            successful += 1
+            total_chunks += chunk_count
+        except Exception as exc:
+            retry_result: str | None = None
+            if _is_retryable_http_session_error(client, exc):
+                try:
+                    retry_result = await _ingest_uuid_with_fresh_client(client, substance_uuid)
+                except Exception as retry_exc:
+                    failed += 1
+                    errors.append(f"Substance {substance_uuid}: {retry_exc}")
+                    continue
+            else:
+                failed += 1
+                errors.append(f"Substance {substance_uuid}: {exc}")
+                continue
+
+            chunk_count = _parse_ingest_result(retry_result)
+            if chunk_count is None:
+                failed += 1
+                errors.append(f"Substance {substance_uuid}: {retry_result}")
+                continue
+            successful += 1
+            total_chunks += chunk_count
+
+    return {
+        "total_substances": len(uuids),
         "total_chunks": total_chunks,
         "successful": successful,
         "failed": failed,
@@ -457,12 +611,7 @@ async def load_substances_from_api(
             bearer_token=bearer_token,
         ) as client:
             await client.ensure_ingest_available()
-            statistics = await client.get_statistics()
-            logger.info(
-                "MCP Server: %s chunks, %s substances",
-                statistics.get("total_chunks", 0),
-                statistics.get("total_substances", 0),
-            )
+            await _log_statistics_if_available(client)
 
             for batch_start in range(0, len(substances), batch_size):
                 batch = substances[batch_start: batch_start + batch_size]
@@ -507,12 +656,7 @@ async def _load_from_file_async(
                 bearer_token=bearer_token,
             ).__aenter__()
             await client.ensure_ingest_available()
-            statistics = await client.get_statistics()
-            logger.info(
-                "MCP Server: %s chunks, %s substances",
-                statistics.get("total_chunks", 0),
-                statistics.get("total_substances", 0),
-            )
+            await _log_statistics_if_available(client)
         except Exception as exc:
             logger.error("MCP server not available: %s", exc)
             stats["errors"].append(f"MCP server not available: {exc}")

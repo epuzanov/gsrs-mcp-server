@@ -36,7 +36,10 @@ from app.services.query_rewrite import QueryRewriteService
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-configure_logging(settings.debug_mode)
+configure_logging(
+    settings.debug_mode,
+    use_stderr=os.getenv("MCP_TRANSPORT", "streamable-http").lower() == "stdio",
+)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -366,6 +369,29 @@ def _emit_pipeline_stages(tool: ToolTelemetry, diagnostics: Dict[str, Any]) -> N
         )
 
 
+def _ingest_substance_payload(substance: Dict[str, Any]) -> tuple[str, int]:
+    """Validate, chunk, embed, and upsert a GSRS substance payload."""
+    from gsrs.model import Substance
+
+    parsed_substance = Substance.model_validate(substance)
+    if runtime.chunker is None:
+        raise RuntimeError("Chunker is not initialized.")
+
+    chunks = runtime.chunker.chunk(parsed_substance)
+    if not chunks:
+        return str(getattr(parsed_substance, "uuid", "unknown")), 0
+
+    texts = [str(chunk.text) for chunk in chunks]
+    embeddings = runtime.embedding_service.embed_batch(texts)
+    documents = []
+    for chunk, embedding in zip(chunks, embeddings):
+        chunk.set_embedding(embedding)
+        documents.append(chunk)
+    count = runtime.vector_db.upsert_documents(documents)
+    uid = str(getattr(parsed_substance, "uuid", "unknown"))
+    return uid, count
+
+
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
@@ -655,22 +681,57 @@ async def gsrs_ingest(substance_json: str) -> str:
             substance = json.loads(substance_json)
         except (json.JSONDecodeError, ValueError) as exc:
             return f"Error: invalid JSON - {exc}"
-
-        from gsrs.model import Substance
-
-        parsed_substance = Substance.model_validate(substance)
-        chunks = runtime.chunker.chunk(parsed_substance)
-        if not chunks:
+        uid, count = _ingest_substance_payload(substance)
+        if count == 0:
             return "No chunks generated from substance."
+        tool.finish("success", result_count=count, citation_count=0)
+        return f"Ingested **{uid}** - {count} chunks."
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Ingestion error: {exc}"
 
-        texts = [str(chunk.text) for chunk in chunks]
-        embeddings = runtime.embedding_service.embed_batch(texts)
-        documents = []
-        for chunk, embedding in zip(chunks, embeddings):
-            chunk.set_embedding(embedding)
-            documents.append(chunk)
-        count = runtime.vector_db.upsert_documents(documents)
-        uid = str(getattr(parsed_substance, "uuid", "unknown"))
+
+@mcp.tool()
+async def gsrs_ingest_from_uuid(substance_uuid: str) -> str:
+    """Fetch a GSRS substance by UUID from the upstream API and ingest it locally.
+
+    Args:
+        substance_uuid: GSRS substance UUID.
+
+    Returns:
+        Ingestion result.
+    """
+    tool = _tool_call("gsrs_ingest_from_uuid", query_type="uuid")
+    try:
+        if not runtime.ingestion_available():
+            reason = runtime.ingestion_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"Ingestion is currently unavailable: {reason}"
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"GSRS upstream is currently unavailable: {reason}"
+
+        substance = runtime.gsrs_api.get_substance_by_uuid(substance_uuid)
+        if substance is None:
+            tool.finish("abstained", result_count=0, citation_count=0)
+            return f"Substance **{substance_uuid}** not found in GSRS API."
+
+        uid, count = _ingest_substance_payload(substance)
+        if count == 0:
+            return f"No chunks generated from substance **{uid}**."
         tool.finish("success", result_count=count, citation_count=0)
         return f"Ingested **{uid}** - {count} chunks."
     except Exception as exc:
