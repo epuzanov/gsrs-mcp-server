@@ -542,6 +542,35 @@ class _StaticVectorDb:
         return []
 
 
+class _GoldenEmbeddingService:
+    def embed(self, text):
+        lowered = text.lower()
+        if "aspirin" in lowered and "50-78-2" in lowered:
+            return [2.0]
+        if "aspirin" in lowered:
+            return [1.0]
+        return [0.0]
+
+
+class _GoldenVectorDb:
+    def __init__(self, semantic_results, deterministic_results):
+        self.semantic_results = semantic_results
+        self.deterministic_results = deterministic_results
+
+    def search_by_example(self, example, top_k=20, mode="match"):
+        if example.get("reliable_codes", {}).get("CAS") == "50-78-2":
+            return self.deterministic_results[:top_k]
+        return []
+
+    def similarity_search(self, query_embedding, top_k=5, filters=None):
+        if query_embedding == [1.0]:
+            return self.semantic_results[:top_k]
+        return []
+
+    def lexical_search(self, query, top_k=40, filters=None):
+        return []
+
+
 class TestIdentifierFirstQueryPipeline(unittest.TestCase):
     def _make_result(self, text: str, metadata: dict) -> tuple:
         doc = VectorDocument(
@@ -664,6 +693,95 @@ class TestIdentifierFirstQueryPipeline(unittest.TestCase):
         self.assertEqual(response.debug["answer_generation"]["mode"], "template_fallback")
         self.assertEqual(response.debug["answer_generation"]["error_type"], "RuntimeError")
         self.assertTrue(any(stage["stage"] == "answer_generation" for stage in response.debug["stage_trace"]))
+
+
+class TestGoldenSetQueryPipeline(unittest.TestCase):
+    def _make_doc(self, text: str, section: str, metadata: dict) -> VectorDocument:
+        return VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=uuid4(),
+            section=section,
+            text=text,
+            embedding=[0.0] * 8,
+            metadata_json=metadata,
+        )
+
+    def _make_result(self, doc: VectorDocument, score: float):
+        return type("Result", (), {"document": doc, "score": score})()
+
+    def _build_pipeline(self) -> QueryPipelineService:
+        names_doc = self._make_doc(
+            "Aspirin is also known as acetylsalicylic acid.",
+            "names",
+            {"canonical_name": "Aspirin", "names": [{"name": "Aspirin"}, {"name": "Acetylsalicylic acid"}]},
+        )
+        codes_doc = self._make_doc(
+            "CAS code for aspirin is 50-78-2.",
+            "codes",
+            {
+                "canonical_name": "Aspirin",
+                "codes": [{"codeSystem": "CAS", "code": "50-78-2"}],
+                "reliable_codes": {"CAS": "50-78-2"},
+                "all_codes": {"CAS": "50-78-2"},
+            },
+        )
+        weak_doc = self._make_doc(
+            "Aspirin is used in many settings but this chunk is broad and weak.",
+            "overview",
+            {"canonical_name": "Aspirin"},
+        )
+
+        vector_db = _GoldenVectorDb(
+            semantic_results=[
+                (names_doc, 0.92),
+                (codes_doc, 0.89),
+                (weak_doc, 0.08),
+            ],
+            deterministic_results=[
+                self._make_result(codes_doc, 1.0),
+            ],
+        )
+        return QueryPipelineService(
+            vector_db=vector_db,
+            embedding_service=_GoldenEmbeddingService(),
+            llm_service=None,
+            use_llm=False,
+            min_confidence=0.2,
+            max_evidence=2,
+        )
+
+    def test_golden_general_query_returns_grounded_citations(self):
+        pipeline = self._build_pipeline()
+
+        response = pipeline.ask(
+            AskRequest(
+                query="Tell me about aspirin",
+                return_evidence=True,
+            )
+        )
+
+        self.assertFalse(response.abstained)
+        self.assertGreaterEqual(len(response.citations), 1)
+        self.assertTrue(all(citation.chunk_id for citation in response.citations))
+        self.assertTrue(any(citation.quote and "aspirin" in citation.quote.lower() for citation in response.citations))
+        self.assertLessEqual(len(response.evidence_chunks), 2)
+
+    def test_golden_identifier_query_prefers_exact_code_evidence(self):
+        pipeline = self._build_pipeline()
+
+        response = pipeline.ask(
+            AskRequest(
+                query="CAS 50-78-2",
+                return_evidence=True,
+                debug=True,
+            )
+        )
+
+        self.assertFalse(response.abstained)
+        self.assertIn("identifier-first:code", response.debug["retrieval_mode"])
+        self.assertEqual(response.evidence_chunks[0].element_path, "codes")
+        self.assertTrue(any(citation.quote and "50-78-2" in citation.quote for citation in response.citations))
 
 
 if __name__ == "__main__":

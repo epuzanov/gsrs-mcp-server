@@ -224,6 +224,7 @@ class AbstentionPolicy:
     def _extract_identifier_literals(self, query_lower: str) -> List[str]:
         patterns = [
             r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+            r"\b[0-9]{2,}-[0-9]{2,}-[0-9]\b",
             r"\b[a-z0-9]{4,}(?:-[a-z0-9]{2,})+\b",
             r"\b[a-z]{14}-[a-z]{10}-[a-z]\b",
         ]

@@ -270,6 +270,23 @@ class TestToolBehavior(unittest.TestCase):
 
 
 class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):
+    async def test_streamable_http_requires_bearer_token(self):
+        from app import main
+
+        app = main.mcp.streamable_http_app()
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            timeout=30.0,
+        ) as client:
+            response = await client.post("/mcp", json={})
+
+        self.assertEqual(response.status_code, 401)
+        payload = response.json()
+        self.assertEqual(payload["error"], "invalid_token")
+
     async def test_streamable_http_smoke_path(self):
         from app import main
 
