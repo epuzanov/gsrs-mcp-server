@@ -5,7 +5,9 @@ Heuristic-based reranking with optional LLM rerank mode.
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.config import Settings, settings
 from app.models.db import VectorDocument
+from app.services.code_systems import get_identifier_field_names, get_identifier_mention_patterns
 
 
 class RerankerService:
@@ -25,10 +27,13 @@ class RerankerService:
         semantic_weight: float = 0.4,
         lexical_weight: float = 0.3,
         metadata_weight: float = 0.3,
+        app_settings: Settings = settings,
     ):
         self.semantic_weight = semantic_weight
         self.lexical_weight = lexical_weight
         self.metadata_weight = metadata_weight
+        self.identifier_field_names = get_identifier_field_names(app_settings)
+        self.identifier_mention_patterns = get_identifier_mention_patterns(app_settings)
 
     def rerank(
         self,
@@ -263,15 +268,14 @@ class RerankerService:
 
         # Check metadata_json for code-related fields
         for key in [
-            "cas",
-            "unii",
-            "pubchem",
-            "drugbank",
-            "chembl",
-            "rxcui",
             "uuid",
             "approvalID",
         ]:
+            val = metadata.get(key)
+            if val:
+                identifiers.append(str(val))
+
+        for key in self.identifier_field_names:
             val = metadata.get(key)
             if val:
                 identifiers.append(str(val))
@@ -323,7 +327,9 @@ class RerankerService:
         exact_name = None
         if quoted_match:
             exact_name = next(group for group in quoted_match.groups() if group)
-        elif 0 < len(query.split()) <= 4 and not any(token in query_lower for token in ["code", "identifier", "cas", "unii", "approval"]):
+        elif 0 < len(query.split()) <= 4 and not any(pattern.search(query) for pattern in self.identifier_mention_patterns.values()) and not any(
+            token in query_lower for token in ["code", "identifier", "approval"]
+        ):
             exact_name = query.strip().rstrip("?")
 
         exact_identifiers = set(
@@ -335,7 +341,9 @@ class RerankerService:
         )
 
         preferred_sections: List[str] = []
-        if any(keyword in query_lower for keyword in ["cas", "unii", "approval", "identifier", "code", "inchi", "smiles", "inchikey"]):
+        if any(pattern.search(query) for pattern in self.identifier_mention_patterns.values()) or any(
+            keyword in query_lower for keyword in ["approval", "identifier", "code", "inchi", "smiles", "inchikey"]
+        ):
             preferred_sections.append("codes")
         if exact_name is not None or any(keyword in query_lower for keyword in ["name", "called", "synonym"]):
             preferred_sections.append("names")

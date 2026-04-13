@@ -92,6 +92,24 @@ class Settings(BaseSettings):
     llm_retry_backoff_ms: int = int(os.getenv("LLM_RETRY_BACKOFF_MS", "250"))
 
     # Similar Substance Search - Reliable identifier codes (prioritized)
+    identifier_code_systems: list[str] = _get_list_env(
+        "IDENTIFIER_CODE_SYSTEMS",
+        [
+            "CAS",
+            "UNII",
+            "FDA UNII",
+            "PubChem",
+            "DrugBank",
+            "ChEMBL",
+            "RXCUI",
+            "SMS_ID",
+            "SMSID",
+            "EVMPD",
+            "xEVMPD",
+            "ASK",
+            "ASKP",
+        ],
+    )
     similarity_reliable_codes: list[str] = _get_list_env(
         "SIMILARITY_RELIABLE_CODES",
         ["FDA UNII", "UNII", "SMS_ID", "SMSID", "xEVMPD", "EVMPD", "ASK", "ASKP"],

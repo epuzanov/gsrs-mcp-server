@@ -4,6 +4,7 @@ GSRS MCP Server - Unit Tests for Query Pipeline Components
 import unittest
 from uuid import uuid4
 
+from app.config import settings
 from app.services.query_rewrite import QueryRewriteService, RewriteResult
 from app.services.metadata_filters import MetadataFilterBuilder
 from app.services.lexical_retrieval import LexicalRetriever
@@ -34,6 +35,15 @@ class TestQueryRewriteService(unittest.TestCase):
         result = self.service.rewrite("What is the CAS code for ibuprofen?")
         self.assertEqual(result.intent, "identifier_lookup")
         self.assertIn("CAS", result.rewrites[1] if len(result.rewrites) > 1 else result.rewrites[0])
+
+    def test_detect_configured_identifier_lookup_for_ask(self):
+        """Configured ASK/ASKP systems should participate in rewrite intent detection."""
+        service = QueryRewriteService(
+            settings.model_copy(update={"identifier_code_systems": ["ASK", "ASKP"]})
+        )
+        result = service.rewrite("What is the ASK code for ibuprofen?")
+        self.assertEqual(result.intent, "identifier_lookup")
+        self.assertTrue(any("ASK" in rewrite for rewrite in result.rewrites))
 
     def test_detect_relationship_query(self):
         """Test relationship query intent detection."""
@@ -114,6 +124,27 @@ class TestAggregationService(unittest.TestCase):
         self.assertEqual(result.total_count, 2)
         self.assertEqual(result.aggregation_type, "identifiers")
         self.assertEqual(result.substance_name, "Ibuprofen")
+
+    def test_extract_configured_code_systems_from_reliable_code_maps(self):
+        """Configured identifier systems should be surfaced from reliable/all code maps."""
+        service = AggregationService(
+            settings.model_copy(update={"identifier_code_systems": ["ASK", "ASKP", "SMS_ID", "SMSID", "EVMPD", "xEVMPD"]})
+        )
+        metadata = {
+            "canonical_name": "Ibuprofen",
+            "reliable_codes": {"ASK": "ASK-001", "ASKP": "ASKP-002"},
+            "all_codes": {"SMS_ID": "SMS-003", "xEVMPD": "XEV-004"},
+        }
+        doc = self._make_doc("Configured identifier systems", metadata)
+        candidates = [(doc, 0.9)]
+
+        result = service.aggregate(candidates, "List all identifiers of Ibuprofen", "aggregation_identifiers")
+        types = {item["type"] for item in result.items}
+
+        self.assertIn("ASK", types)
+        self.assertIn("ASKP", types)
+        self.assertIn("SMS_ID", types)
+        self.assertIn("xEVMPD", types)
 
     def test_extract_names_from_metadata(self):
         """Test extracting names from metadata."""
@@ -348,6 +379,19 @@ class TestRerankerService(unittest.TestCase):
 
         self.assertEqual(reranked[0][0].chunk_id, doc1.chunk_id)
 
+    def test_configured_identifier_field_boost(self):
+        """Configured code-system fields should participate in identifier reranking."""
+        reranker = RerankerService(
+            app_settings=settings.model_copy(update={"identifier_code_systems": ["ASKP"]})
+        )
+        doc1 = self._make_doc("ASKP entry", metadata={"askp": "ASKP-001"})
+        doc2 = self._make_doc("Generic entry", metadata={})
+
+        candidates = [(doc1, 0.45), (doc2, 0.7)]
+        reranked = reranker.rerank(candidates, "ASKP ASKP-001")
+
+        self.assertEqual(reranked[0][0].chunk_id, doc1.chunk_id)
+
 
 class TestAbstentionPolicy(unittest.TestCase):
     """Unit tests for AbstentionPolicy."""
@@ -414,6 +458,21 @@ class TestAbstentionPolicy(unittest.TestCase):
         decision = policy.evaluate(evidence, "test query")
         self.assertTrue(decision.abstained)
         self.assertIn("threshold", decision.abstain_reason)
+
+    def test_configured_identifier_support_allows_answer(self):
+        """Configured identifier systems should satisfy identifier-first abstention checks."""
+        policy = AbstentionPolicy(
+            app_settings=settings.model_copy(update={"identifier_code_systems": ["ASK", "ASKP"]})
+        )
+        evidence = [
+            self._make_evidence(
+                "ASK code ASK-001 belongs to Ibuprofen.",
+                score=0.9,
+                metadata={"reliable_codes": {"ASK": "ASK-001"}},
+            )
+        ]
+        decision = policy.evaluate(evidence, "ASK ASK-001", retrieval_mode="identifier-first:code")
+        self.assertFalse(decision.abstained)
 
 
 class TestEvidenceExtractor(unittest.TestCase):
@@ -665,6 +724,37 @@ class TestIdentifierFirstQueryPipeline(unittest.TestCase):
         self.assertFalse(embedding.called)
         self.assertFalse(response.abstained)
         self.assertIn("identifier-first:inchikey", response.debug["retrieval_mode"])
+
+    def test_ask_code_query_uses_identifier_first_routing(self):
+        doc, score = self._make_result(
+            "ASK code ASK-001 belongs to Aspirin.",
+            {
+                "reliable_codes": {"ASK": "ASK-001"},
+                "all_codes": {"ASK": "ASK-001"},
+                "canonical_name": "Aspirin",
+            },
+        )
+        vector_db = _StaticVectorDb([type("Result", (), {"document": doc, "score": score})()])
+        embedding = _FailingEmbeddingService()
+        pipeline = QueryPipelineService(
+            vector_db=vector_db,
+            embedding_service=embedding,
+            llm_service=None,
+            use_llm=False,
+            min_confidence=0.2,
+        )
+
+        response = pipeline.ask(
+            AskRequest(
+                query="ASK ASK-001",
+                return_evidence=True,
+                debug=True,
+            )
+        )
+
+        self.assertFalse(embedding.called)
+        self.assertFalse(response.abstained)
+        self.assertIn("identifier-first:code", response.debug["retrieval_mode"])
 
     def test_debug_trace_surfaces_generation_fallback_details(self):
         doc, score = self._make_result(

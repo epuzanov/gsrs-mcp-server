@@ -3,15 +3,13 @@ GSRS MCP Server - Query Rewrite Service
 Normalizes questions, detects intent, and generates multiple rewrites for hybrid retrieval.
 """
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List
 
-# Identifier keywords that signal exact-lookup intent
-_IDENTIFIER_KEYWORDS = [
-    "cas", "unii", "pubchem", "drugbank", "chembl", "rxcui",
-    "fda unii", "sms_id", "smsid", "svgid", "evmpd", "xevmpd",
-    "code", "identifier", "id",
-]
+from app.config import Settings, settings
+from app.services.code_systems import (
+    get_identifier_mention_patterns,
+)
 
 # Relationship keywords
 _RELATIONSHIP_KEYWORDS = [
@@ -60,11 +58,15 @@ class QueryRewriteService:
     - Infers likely metadata filters
     """
 
+    def __init__(self, app_settings: Settings = settings):
+        self.app_settings = app_settings
+        self.identifier_mention_patterns = get_identifier_mention_patterns(app_settings)
+
     def rewrite(self, query: str) -> RewriteResult:
         query_lower = query.lower().strip()
         canonical = self._normalize(query)
-        intent = self._detect_intent(query_lower)
-        filters = self._infer_filters(query_lower)
+        intent = self._detect_intent(query, query_lower)
+        filters = self._infer_filters(query, query_lower)
         rewrites = self._generate_rewrites(query, query_lower, intent)
 
         return RewriteResult(
@@ -78,12 +80,13 @@ class QueryRewriteService:
         """Normalize query text: strip, lowercase, collapse whitespace."""
         return re.sub(r"\s+", " ", query.strip().lower())
 
-    def _detect_intent(self, query_lower: str) -> str:
+    def _detect_intent(self, query: str, query_lower: str) -> str:
         """Detect the query intent."""
+        has_identifier_reference = self._contains_identifier_reference(query)
         # Check for aggregation/count queries first (higher priority)
         if any(kw in query_lower for kw in _AGGREGATION_KEYWORDS):
             # e.g., "How many identifiers has Ibuprofen?"
-            if any(kw in query_lower for kw in _IDENTIFIER_KEYWORDS):
+            if has_identifier_reference or any(kw in query_lower for kw in ["code", "identifier", "id"]):
                 return "aggregation_identifiers"
             if any(kw in query_lower for kw in ["name", "names", "called", "synonym"]):
                 return "aggregation_names"
@@ -92,7 +95,7 @@ class QueryRewriteService:
             return "aggregation_general"
 
         # Check for identifier lookup
-        if any(kw in query_lower for kw in _IDENTIFIER_KEYWORDS):
+        if has_identifier_reference or any(kw in query_lower for kw in ["code", "identifier", "id"]):
             if any(w in query_lower for w in ["what is", "what are", "find", "lookup", "get"]):
                 return "identifier_lookup"
             return "identifier_query"
@@ -112,7 +115,7 @@ class QueryRewriteService:
         # Default
         return "general"
 
-    def _infer_filters(self, query_lower: str) -> Dict:
+    def _infer_filters(self, query: str, query_lower: str) -> Dict:
         """Infer metadata filters from the query."""
         filters: Dict = {}
 
@@ -137,7 +140,7 @@ class QueryRewriteService:
         sections = []
         if any(w in query_lower for w in ["name", "called", "nomenclature"]):
             sections.append("names")
-        if any(w in query_lower for w in ["code", "cas", "unii", "identifier", "rxcui", "chembl", "pubchem", "drugbank"]):
+        if self._contains_identifier_reference(query) or any(w in query_lower for w in ["code", "identifier"]):
             sections.append("codes")
         if any(w in query_lower for w in ["structure", "molecular", "formula", "smiles", "inchi"]):
             sections.append("structure")
@@ -179,7 +182,7 @@ class QueryRewriteService:
         elif intent == "identifier_lookup":
             # Extract substance name (rough heuristic: words after preposition)
             substance = self._extract_substance_name(query_lower)
-            identifiers = self._detect_identifiers(query_lower)
+            identifiers = self._detect_identifiers(query)
 
             for ident in identifiers:
                 rewrites.append(f"{ident} {substance}")
@@ -192,7 +195,7 @@ class QueryRewriteService:
 
         elif intent == "identifier_query":
             substance = self._extract_substance_name(query_lower)
-            identifiers = self._detect_identifiers(query_lower)
+            identifiers = self._detect_identifiers(query)
 
             for ident in identifiers:
                 rewrites.append(f"{ident} {substance}")
@@ -263,27 +266,19 @@ class QueryRewriteService:
         # Return the longest meaningful phrase
         return name if name else query_lower
 
-    def _detect_identifiers(self, query_lower: str) -> List[str]:
+    def _detect_identifiers(self, query_text: str) -> List[str]:
         """Detect identifier types mentioned in the query."""
         found = []
-        ident_map = {
-            "cas": "CAS",
-            "unii": "UNII",
-            "fda unii": "FDA UNII",
-            "pubchem": "PubChem",
-            "drugbank": "DrugBank",
-            "chembl": "ChEMBL",
-            "rxcui": "RXCUI",
-            "sms_id": "SMS_ID",
-            "smsid": "SMSID",
-            "svgid": "SVGID",
-            "evmpd": "EVMPD",
-            "xevmpd": "xEVMPD",
-        }
-        for kw, label in ident_map.items():
-            if kw in query_lower:
+        for label, pattern in self.identifier_mention_patterns.items():
+            if pattern.search(query_text):
                 found.append(label)
         return found if found else ["code"]
+
+    def _contains_identifier_reference(self, query: str) -> bool:
+        query_lower = query.lower()
+        if any(pattern.search(query) for pattern in self.identifier_mention_patterns.values()):
+            return True
+        return any(keyword in query_lower for keyword in ["code", "identifier"])
 
     def _detect_relationships(self, query_lower: str) -> List[str]:
         """Detect relationship types mentioned in the query."""

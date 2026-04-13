@@ -6,7 +6,9 @@ from dataclasses import dataclass
 import re
 from typing import Any, Dict, List, Optional
 
+from app.config import Settings, settings
 from app.models.db import VectorDocument
+from app.services.code_systems import get_identifier_field_names, get_identifier_value_patterns
 from app.services.evidence import EvidenceResult
 
 
@@ -34,10 +36,13 @@ class AbstentionPolicy:
         min_score_threshold: float = 0.3,
         min_confidence: float = 0.0,
         min_evidence_count: int = 1,
+        app_settings: Settings = settings,
     ):
         self.min_score_threshold = min_score_threshold
         self.min_confidence = min_confidence
         self.min_evidence_count = min_evidence_count
+        self.identifier_field_names = get_identifier_field_names(app_settings)
+        self.identifier_value_patterns = get_identifier_value_patterns(app_settings)
 
     def evaluate(
         self,
@@ -146,7 +151,7 @@ class AbstentionPolicy:
     def _has_identifier_support(self, evidence: List[EvidenceResult], query: str) -> bool:
         """Check if any evidence contains exact identifier matches."""
         query_lower = query.lower()
-        query_literals = self._extract_identifier_literals(query_lower)
+        query_literals = self._extract_identifier_literals(query)
         query_name = self._extract_candidate_name(query)
 
         for e in evidence:
@@ -221,14 +226,20 @@ class AbstentionPolicy:
         overlap_ratio = total_overlap / total_terms
         return overlap_ratio < 0.1  # Less than 10% term overlap
 
-    def _extract_identifier_literals(self, query_lower: str) -> List[str]:
+    def _extract_identifier_literals(self, query_text: str) -> List[str]:
+        matches: List[str] = []
+        for pattern in self.identifier_value_patterns.values():
+            match = pattern.search(query_text)
+            if match:
+                matches.append(match.group(1).lower())
+
+        query_lower = query_text.lower()
         patterns = [
             r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
             r"\b[0-9]{2,}-[0-9]{2,}-[0-9]\b",
             r"\b[a-z0-9]{4,}(?:-[a-z0-9]{2,})+\b",
             r"\b[a-z]{14}-[a-z]{10}-[a-z]\b",
         ]
-        matches: List[str] = []
         for pattern in patterns:
             matches.extend(match.lower() for match in re.findall(pattern, query_lower, re.IGNORECASE))
         return list(dict.fromkeys(matches))
@@ -236,6 +247,11 @@ class AbstentionPolicy:
     def _extract_metadata_literals(self, metadata: Dict[str, Any]) -> set[str]:
         values: set[str] = set()
         for key in ["uuid", "approvalID", "cas", "unii", "pubchem", "drugbank", "chembl", "rxcui"]:
+            value = metadata.get(key)
+            if value:
+                values.add(str(value).lower())
+
+        for key in self.identifier_field_names:
             value = metadata.get(key)
             if value:
                 values.add(str(value).lower())
@@ -269,7 +285,9 @@ class AbstentionPolicy:
 
         stripped = query.strip().rstrip("?")
         tokens = stripped.split()
-        if 0 < len(tokens) <= 4 and not any(token.lower() in {"cas", "unii", "approval", "identifier", "code"} for token in tokens):
+        if 0 < len(tokens) <= 4 and not any(pattern.search(query) for pattern in self.identifier_value_patterns.values()) and not any(
+            token.lower() in {"approval", "identifier", "code"} for token in tokens
+        ):
             return stripped
         return None
 

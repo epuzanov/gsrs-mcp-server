@@ -7,6 +7,7 @@
 - Preserved retrieval-only fallback when answer generation is unavailable and made identifier-first routing more deterministic.
 - Added stage-level ask-path diagnostics, richer optional debug traces, and structured-log redaction for sensitive fields.
 - Strengthened conservative retrieval with broader identifier-first routing, field-aware reranking boosts, tighter evidence selection, chunk-referenced citations, and clearer low-confidence abstention reasons.
+- Added configurable shared identifier code-system support so ASK, ASKP, SMS_ID, SMSID, EVMPD, and xEVMPD behave consistently across rewrites, routing, reranking, abstention, and identifier aggregation.
 - Expanded tests toward runtime startup/failure semantics, auth enforcement, degraded behavior, identifier routing, grounded golden-set coverage, and MCP transport smoke coverage.
 
 ### Added

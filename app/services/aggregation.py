@@ -5,7 +5,9 @@ Handles counting/collecting queries like "How many identifiers has Ibuprofen?"
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from app.config import Settings, settings
 from app.models.db import VectorDocument
+from app.services.code_systems import get_identifier_field_names
 
 
 @dataclass
@@ -26,6 +28,9 @@ class AggregationService:
     - Gathers relationships
     - Builds a summary
     """
+
+    def __init__(self, app_settings: Settings = settings):
+        self.identifier_field_names = get_identifier_field_names(app_settings)
 
     def aggregate(
         self,
@@ -119,10 +124,17 @@ class AggregationService:
                     codes.append({"type": "unknown", "code": code})
 
         # Also check direct code fields
-        for key in ["cas", "unii", "pubchem", "drugbank", "chembl", "rxcui"]:
+        for key in self.identifier_field_names:
             val = metadata.get(key)
             if val:
                 codes.append({"type": key.upper(), "code": str(val)})
+
+        for key in ["reliable_codes", "all_codes"]:
+            bucket = metadata.get(key, {})
+            if isinstance(bucket, dict):
+                for code_system, code in bucket.items():
+                    if code:
+                        codes.append({"type": str(code_system), "code": str(code)})
 
         return codes
 
