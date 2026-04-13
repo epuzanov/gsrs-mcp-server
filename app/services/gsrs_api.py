@@ -12,10 +12,11 @@ import httpx
 
 # Official GSRS API endpoints
 GSRS_BASE_URL = "https://gsrs.ncats.nih.gov/api/v1"
+GSRS_EXAMPLE_BASE_URL = "https://gsrs.ncats.nih.gov/ginas/app/api/v1"
 GSRS_SUBSTANCE_URL = f"{GSRS_BASE_URL}/substances"
 GSRS_SEARCH_URL = f"{GSRS_BASE_URL}/substances/search"
-GSRS_STRUCTURE_SEARCH_URL = f"{GSRS_BASE_URL}/substances/structure-search"
-GSRS_SEQUENCE_SEARCH_URL = f"{GSRS_BASE_URL}/substances/sequence-search"
+GSRS_STRUCTURE_SEARCH_URL = f"{GSRS_EXAMPLE_BASE_URL}/substances/structureSearch"
+GSRS_SEQUENCE_SEARCH_URL = f"{GSRS_EXAMPLE_BASE_URL}/substances/sequenceSearch"
 
 
 class GsrsApiService:
@@ -31,6 +32,7 @@ class GsrsApiService:
         retry_backoff_ms: int = 250,
     ):
         self.base_url = base_url.rstrip("/")
+        self.example_base_url = self._derive_example_base_url(self.base_url)
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self.public_only = public_only
@@ -76,6 +78,14 @@ class GsrsApiService:
             headers={"Accept": "application/json"},
         )
 
+    @staticmethod
+    def _derive_example_base_url(base_url: str) -> str:
+        if "/ginas/app/api/v1" in base_url:
+            return base_url
+        if base_url.endswith("/api/v1"):
+            return f"{base_url[:-len('/api/v1')]}/ginas/app/api/v1"
+        return f"{base_url}/ginas/app/api/v1"
+
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
@@ -95,10 +105,62 @@ class GsrsApiService:
             f"GSRS upstream request failed after {self.max_retries + 1} attempt(s): {last_error}"
         ) from last_error
 
+    def _request_json(self, method: str, url: str, **kwargs: Any) -> Dict[str, Any]:
+        return self._request(method, url, **kwargs).json()
+
+    def _resolve_async_search(self, envelope: Dict[str, Any], size: int) -> Dict[str, Any]:
+        status_payload = dict(envelope)
+        status_url = status_payload.get("url")
+        results_url = status_payload.get("results")
+        deadline = time.monotonic() + max(float(self.timeout), 1.0)
+
+        while not (status_payload.get("finished") or status_payload.get("determined")):
+            if not status_url or time.monotonic() >= deadline:
+                break
+            time.sleep(min(self.retry_backoff_ms / 1000, 1.0))
+            status_payload = self._request_json("GET", status_url)
+            results_url = status_payload.get("results") or results_url
+
+        if not results_url:
+            return {
+                "results": [],
+                "total": 0,
+                "count": 0,
+                "status": status_payload.get("status", "Unknown"),
+                "finished": bool(status_payload.get("finished") or status_payload.get("determined")),
+                "envelope": status_payload,
+            }
+
+        results_payload = self._request_json(
+            "GET",
+            results_url,
+            params={"top": size, "skip": 0},
+        )
+        return {
+            "results": results_payload.get("content", []),
+            "total": results_payload.get("total", 0),
+            "count": results_payload.get("count", 0),
+            "status": status_payload.get("status", "Unknown"),
+            "finished": bool(status_payload.get("finished") or status_payload.get("determined")),
+            "envelope": status_payload,
+            "results_envelope": results_payload,
+        }
+
+    @staticmethod
+    def _map_structure_search_type(search_type: str) -> str:
+        mapping = {
+            "EXACT": "Exact",
+            "SIMILAR": "Similarity",
+            "SUBSTRUCTURE": "Substructure",
+            "SUPERSTRUCTURE": "Superstructure",
+        }
+        return mapping.get(search_type.upper(), search_type.title())
+
     def get_status(self) -> Dict[str, Any]:
         """Return non-sensitive configuration details."""
         return {
             "base_url": self.base_url,
+            "example_base_url": self.example_base_url,
             "timeout": self.timeout,
             "verify_ssl": self.verify_ssl,
             "public_only": self.public_only,
@@ -174,22 +236,19 @@ class GsrsApiService:
         """
         if not smiles and not inchi:
             raise ValueError("Either smiles or inchi must be provided.")
-
-        payload: Dict[str, Any] = {
-            "searchType": search_type,
-            "size": size,
+        query = inchi or smiles or ""
+        params: Dict[str, Any] = {
+            "q": query,
         }
-        if smiles:
-            payload["smiles"] = smiles
-        if inchi:
-            payload["inchi"] = inchi
+        if search_type:
+            params["type"] = self._map_structure_search_type(search_type)
 
-        resp = self._request(
-            "POST",
-            f"{self.base_url}/substances/structure-search",
-            json=payload,
+        envelope = self._request_json(
+            "GET",
+            f"{self.example_base_url}/substances/structureSearch",
+            params=params,
         )
-        return resp.json()
+        return self._resolve_async_search(envelope, size)
 
     def sequence_search(
         self,
@@ -210,16 +269,9 @@ class GsrsApiService:
         Returns:
             GSRS API search response dict.
         """
-        payload: Dict[str, Any] = {
-            "sequence": sequence,
-            "searchType": search_type,
-            "sequenceType": sequence_type,
-            "size": size,
-        }
-
-        resp = self._request(
-            "POST",
-            f"{self.base_url}/substances/sequence-search",
-            json=payload,
+        envelope = self._request_json(
+            "GET",
+            f"{self.example_base_url}/substances/sequenceSearch",
+            params={"q": sequence},
         )
-        return resp.json()
+        return self._resolve_async_search(envelope, size)
