@@ -52,3 +52,9 @@ class TestPackagingAndRuntimeArtifacts(unittest.TestCase):
         self.assertIn("/readyz", dockerfile)
         self.assertIn("/readyz", compose)
         self.assertNotIn("HTTP Basic", compose)
+
+    def test_readme_references_current_podman_manifest_path(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("podman-kube-play.yaml", readme)
+        self.assertNotIn("deploy/podman-kube-play.yaml", readme)

@@ -1,49 +1,17 @@
 # Build the application image first:
 #   podman build -t localhost/gsrs-mcp-server:latest .
 #
-# Then edit the secret values below and start the stack:
-#   podman kube play deploy/podman-kube-play.yaml
+# Edit the placeholder secrets below before starting the stack:
+#   POSTGRES_PASSWORD
+#   MCP_PASSWORD
+#   EMBEDDING_API_KEY
+#   LLM_API_KEY
+#
+# Then start the stack:
+#   podman kube play podman-kube-play.yaml
 #
 # Stop and remove it later with:
-#   podman kube down deploy/podman-kube-play.yaml
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: gsrs-mcp-config
-data:
-  POSTGRES_USER: postgres
-  POSTGRES_DB: gsrs_mcp
-  MCP_TRANSPORT: streamable-http
-  MCP_API: 0.0.0.0
-  MCP_PORT: "8000"
-  EMBEDDING_URL: https://api.openai.com/v1/embeddings
-  EMBEDDING_MODEL: text-embedding-3-small
-  EMBEDDING_DIMENSION: "1536"
-  DEFAULT_TOP_K: "5"
-  GSRS_API_URL: https://gsrs.ncats.nih.gov/api/v1
-  GSRS_API_TIMEOUT: "30"
-  GSRS_API_VERIFY_SSL: "true"
-  GSRS_API_PUBLIC_ONLY: "false"
-  LLM_URL: https://api.openai.com/v1/chat/completions
-  LLM_MODEL: gpt-4o-mini
-  LLM_VERIFY_SSL: "true"
-  LLM_TIMEOUT: "30"
-  DEBUG_MODE: "false"
-  STARTUP_VALIDATE_EXTERNAL: "false"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: gsrs-mcp-secrets
-type: Opaque
-stringData:
-  POSTGRES_PASSWORD: change-me
-  MCP_USERNAME: admin
-  MCP_PASSWORD: change-me
-  EMBEDDING_API_KEY: sk-your-embedding-key
-  LLM_API_KEY: ""
----
+#   podman kube down podman-kube-play.yaml
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -54,6 +22,7 @@ spec:
   resources:
     requests:
       storage: 5Gi
+
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -65,6 +34,7 @@ spec:
   resources:
     requests:
       storage: 5Gi
+
 ---
 apiVersion: v1
 kind: Pod
@@ -79,20 +49,11 @@ spec:
       image: docker.io/pgvector/pgvector:pg18
       env:
         - name: POSTGRES_USER
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: POSTGRES_USER
+          value: postgres
         - name: POSTGRES_DB
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: POSTGRES_DB
+          value: gsrs_mcp
         - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: gsrs-mcp-secrets
-              key: POSTGRES_PASSWORD
+          value: change-me
       volumeMounts:
         - name: postgres-data
           mountPath: /var/lib/postgresql/data
@@ -100,128 +61,50 @@ spec:
       image: localhost/gsrs-mcp-server:latest
       imagePullPolicy: Never
       env:
-        - name: POSTGRES_USER
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: POSTGRES_USER
-        - name: POSTGRES_DB
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: POSTGRES_DB
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: gsrs-mcp-secrets
-              key: POSTGRES_PASSWORD
         - name: DATABASE_URL
-          value: postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@127.0.0.1:5432/$(POSTGRES_DB)
+          value: postgresql://postgres:change-me@127.0.0.1:5432/gsrs_mcp
         - name: MCP_TRANSPORT
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: MCP_TRANSPORT
+          value: streamable-http
         - name: MCP_API
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: MCP_API
+          value: 0.0.0.0
         - name: MCP_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: MCP_PORT
+          value: "8000"
         - name: MCP_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: gsrs-mcp-secrets
-              key: MCP_USERNAME
+          value: admin
         - name: MCP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: gsrs-mcp-secrets
-              key: MCP_PASSWORD
+          value: change-me
         - name: EMBEDDING_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: gsrs-mcp-secrets
-              key: EMBEDDING_API_KEY
-        - name: LLM_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: gsrs-mcp-secrets
-              key: LLM_API_KEY
+          value: sk-your-embedding-key
         - name: EMBEDDING_URL
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: EMBEDDING_URL
+          value: https://api.openai.com/v1/embeddings
         - name: EMBEDDING_MODEL
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: EMBEDDING_MODEL
+          value: text-embedding-3-small
         - name: EMBEDDING_DIMENSION
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: EMBEDDING_DIMENSION
+          value: "1536"
         - name: DEFAULT_TOP_K
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: DEFAULT_TOP_K
+          value: "5"
         - name: GSRS_API_URL
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: GSRS_API_URL
+          value: https://gsrs.ncats.nih.gov/api/v1
         - name: GSRS_API_TIMEOUT
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: GSRS_API_TIMEOUT
+          value: "30"
         - name: GSRS_API_VERIFY_SSL
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: GSRS_API_VERIFY_SSL
+          value: "true"
         - name: GSRS_API_PUBLIC_ONLY
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: GSRS_API_PUBLIC_ONLY
+          value: "false"
+        - name: LLM_API_KEY
+          value: ""
         - name: LLM_URL
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: LLM_URL
+          value: https://api.openai.com/v1/chat/completions
         - name: LLM_MODEL
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: LLM_MODEL
+          value: gpt-4o-mini
         - name: LLM_VERIFY_SSL
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: LLM_VERIFY_SSL
+          value: "true"
         - name: LLM_TIMEOUT
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: LLM_TIMEOUT
+          value: "30"
         - name: DEBUG_MODE
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: DEBUG_MODE
+          value: "false"
         - name: STARTUP_VALIDATE_EXTERNAL
-          valueFrom:
-            configMapKeyRef:
-              name: gsrs-mcp-config
-              key: STARTUP_VALIDATE_EXTERNAL
+          value: "false"
       ports:
         - containerPort: 8000
           hostPort: 8000

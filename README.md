@@ -14,6 +14,8 @@
 - CLI: `gsrs-mcp-server`
 - Empty-but-connected vector stores are healthy and ready
 
+This repository no longer documents or relies on legacy REST-style routes such as `/ingest` or `/query`. The public contract is the MCP tool surface plus the health endpoints above.
+
 Quick start from the repo root:
 
 ```bash
@@ -296,12 +298,12 @@ docker-compose --profile postgres up -d
 The server container exposes `http://localhost:8000/mcp`.
 
 For Podman, a `podman kube play` manifest is included at
-[deploy/podman-kube-play.yaml](deploy/podman-kube-play.yaml).
+[podman-kube-play.yaml](podman-kube-play.yaml).
 Build the local image first, then play the manifest:
 
 ```bash
 podman build -t localhost/gsrs-mcp-server:latest .
-podman kube play deploy/podman-kube-play.yaml
+podman kube play podman-kube-play.yaml
 ```
 
 ## Repository Layout
