@@ -16,6 +16,8 @@ Typical direct MCP usage:
 python examples/gsrs_tool.py --transport http --url http://localhost:8000/mcp --token change-me --query "What is the CAS code for aspirin?"
 ```
 
+For HTTP transport, `--token` is the bearer token value configured as `MCP_PASSWORD`.
+
 Or:
 
 ```bash

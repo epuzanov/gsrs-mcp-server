@@ -6,10 +6,21 @@
 
 `gsrs-mcp-server` is an MCP (Model Context Protocol) server for GSRS substance data. It supports `pgvector` or `ChromaDB`, OpenAI-compatible embedding providers, optional answer generation, and MCP tools for grounded retrieval, similarity search, ingest, and deletion.
 
+## Status
+
+- Runtime: MCP-first via `streamable-http` on `/mcp` or local `stdio`
+- Health endpoints: `/livez`, `/readyz`, `/health`
+- Auth: HTTP Bearer token on `/mcp` via `Authorization: Bearer <MCP_PASSWORD>`
+- CLI: `gsrs-mcp-server`
+- Empty-but-connected vector stores are healthy and ready
+
+This repository no longer documents or relies on legacy REST-style routes such as `/ingest` or `/query`. The public contract is the MCP tool surface plus the health endpoints above.
+
 ## What It Exposes
 
 - MCP transport: `streamable-http` on `/mcp`, or `stdio`
 - Health endpoints: `/livez`, `/readyz`, `/health`
+- MCP auth: HTTP Bearer token on `/mcp` when `MCP_PASSWORD` is set
 - MCP tools:
   - `gsrs_ask`
   - `gsrs_similarity_search`
@@ -38,6 +49,11 @@ Runtime flow:
 5. If answer generation is unavailable, `gsrs_ask` degrades to retrieval-grounded fallback output instead of failing.
 6. Tool availability is capability-specific: similarity search only requires the vector backend, while `gsrs_api_*` tools depend on GSRS upstream readiness.
 
+Current runtime entrypoints:
+
+- `gsrs-mcp-server`
+- `python -m app.main`
+
 ## Quick Start
 
 ### 1. Install
@@ -63,6 +79,14 @@ EMBEDDING_URL=https://api.openai.com/v1/embeddings
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIMENSION=1536
 MCP_PASSWORD=change-me
+```
+
+Optional bind and retrieval-tuning settings:
+
+```bash
+MCP_API=0.0.0.0
+MCP_PORT=8000
+IDENTIFIER_CODE_SYSTEMS=CAS,UNII,FDA UNII,PubChem,DrugBank,ChEMBL,RXCUI,SMS_ID,SMSID,EVMPD,xEVMPD,ASK,ASKP
 ```
 
 Optional LLM-backed answering:
@@ -108,6 +132,8 @@ When `MCP_PASSWORD` is set, the MCP endpoint uses HTTP Bearer token verification
 - `MCP_USERNAME` is kept for deployment consistency, but the current HTTP auth flow only checks the bearer token value
 
 For stdio transport, auth is not used because the process is local.
+
+If `MCP_PASSWORD` is empty, the HTTP MCP endpoint starts without bearer-token enforcement. That is suitable only for trusted local development.
 
 ## MCP Client Examples
 

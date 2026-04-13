@@ -61,6 +61,7 @@ For the HTTP MCP endpoint, bearer token verification uses `MCP_PASSWORD` as the 
 ### Runtime / observability
 
 - `DEFAULT_TOP_K`
+- `IDENTIFIER_CODE_SYSTEMS`
 - `ANSWER_CONFIDENCE_THRESHOLD`
 - `MAX_ANSWER_EVIDENCE`
 - `DEBUG_MODE`
