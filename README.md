@@ -252,6 +252,15 @@ docker-compose --profile postgres up -d
 
 The server container exposes `http://localhost:8000/mcp`.
 
+For Podman, a `podman kube play` manifest is included at
+[deploy/podman-kube-play.yaml](/c:/Users/egor.puzanov/Projects/gsrs-mcp-server/deploy/podman-kube-play.yaml).
+Build the local image first, then play the manifest:
+
+```bash
+podman build -t localhost/gsrs-mcp-server:latest .
+podman kube play deploy/podman-kube-play.yaml
+```
+
 ## Repository Layout
 
 ```text

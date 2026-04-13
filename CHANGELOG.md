@@ -11,6 +11,7 @@
 - Added configurable shared identifier code-system support so ASK, ASKP, SMS_ID, SMSID, EVMPD, and xEVMPD behave consistently across rewrites, routing, reranking, abstention, and identifier aggregation.
 - Rewrote `scripts/load_data.py` around a persistent MCP client session with MCP-native tool validation and optional `stdio` transport support.
 - Switched GSRS upstream structure and sequence search to the current documentation example flow using `/ginas/app/api/v1/...Search?q=...` plus status/result polling.
+- Added a Podman `kube play` manifest for local containerized deployment and aligned the compose file with the current `MCP_*` setting names.
 - Expanded tests toward runtime startup/failure semantics, auth enforcement, degraded behavior, identifier routing, grounded golden-set coverage, and MCP transport smoke coverage.
 
 ### Added

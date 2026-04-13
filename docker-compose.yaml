@@ -12,7 +12,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gsrs"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gsrs_mcp"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,11 +40,11 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
       # Authentication (HTTP Basic + Bearer token for MCP)
-      API_USERNAME: ${API_USERNAME:-admin}
-      API_PASSWORD: ${API_PASSWORD:-admin123}
-      # API Configuration
-      API_HOST: 0.0.0.0
-      API_PORT: 8000
+      MCP_USERNAME: ${MCP_USERNAME:-admin}
+      MCP_PASSWORD: ${MCP_PASSWORD:-admin123}
+      # MCP bind configuration
+      MCP_API: 0.0.0.0
+      MCP_PORT: 8000
       DEFAULT_TOP_K: 5
       # GSRS Official API Configuration
       GSRS_API_URL: ${GSRS_API_URL:-https://gsrs.ncats.nih.gov/api/v1}
