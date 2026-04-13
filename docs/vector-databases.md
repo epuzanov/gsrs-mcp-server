@@ -30,7 +30,7 @@ Best for:
 Example:
 
 ```bash
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/gsrs_rag
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/gsrs_mcp
 ```
 
 Notes:

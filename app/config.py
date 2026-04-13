@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # Database URL
     # PostgreSQL: postgresql://user:pass@host:port/dbname
     # ChromaDB: chroma://./chroma_data/chunks
-    database_url: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/gsrs_rag")
+    database_url: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/gsrs_mcp")
 
     # Embedding API Configuration
     embedding_api_key: str = os.getenv("EMBEDDING_API_KEY", "")

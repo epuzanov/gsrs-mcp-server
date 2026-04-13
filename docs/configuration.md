@@ -6,7 +6,7 @@
 
 - `DATABASE_URL`
   - `chroma://./chroma_data/chunks`
-  - `postgresql://user:pass@host:5432/gsrs_rag`
+  - `postgresql://user:pass@host:5432/gsrs_mcp`
 
 ### Embeddings
 
@@ -92,7 +92,7 @@ EMBEDDING_DIMENSION=768
 ### PostgreSQL + pgvector
 
 ```bash
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/gsrs_rag
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/gsrs_mcp
 EMBEDDING_API_KEY=sk-your-key
 EMBEDDING_URL=https://api.openai.com/v1/embeddings
 EMBEDDING_MODEL=text-embedding-3-small

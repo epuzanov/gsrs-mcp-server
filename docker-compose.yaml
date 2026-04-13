@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gsrs_secure_password_change_me}
-      POSTGRES_DB: gsrs_rag
+      POSTGRES_DB: gsrs_mcp
     volumes:
       - postgres_data:/var/lib/postgresql
     ports:
@@ -31,7 +31,7 @@ services:
       # - PostgreSQL: postgresql://user:pass@host:port/dbname
       # - ChromaDB: chroma://./chroma_data/chunks
       # For PostgreSQL (production):
-      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-gsrs_secure_password_change_me}@postgres:5432/gsrs_rag}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-gsrs_secure_password_change_me}@postgres:5432/gsrs_mcp}
       # For ChromaDB (development - uncomment to use):
       # DATABASE_URL: chroma://./chroma_data/chunks
       # Embedding API Configuration
