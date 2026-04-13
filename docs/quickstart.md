@@ -19,7 +19,7 @@ EMBEDDING_API_KEY=sk-your-key
 EMBEDDING_URL=https://api.openai.com/v1/embeddings
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIMENSION=1536
-API_PASSWORD=change-me
+MCP_PASSWORD=change-me
 ```
 
 Optional grounded answer generation:

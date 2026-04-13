@@ -14,7 +14,7 @@ http://localhost:8000/mcp
 Bearer token:
 
 ```http
-Authorization: Bearer <API_PASSWORD>
+Authorization: Bearer <MCP_PASSWORD>
 ```
 
 ## Claude Desktop Example

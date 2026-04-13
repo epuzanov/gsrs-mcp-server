@@ -176,14 +176,14 @@ class FakeRuntime:
 
 class TestMCPConfig(unittest.TestCase):
     def test_default_config(self):
-        self.assertEqual(settings.api_username, "admin")
+        self.assertEqual(settings.mcp_username, "admin")
         self.assertEqual(settings.default_top_k, 5)
 
-    def test_token_verifier_accepts_api_password(self):
+    def test_token_verifier_accepts_mcp_password(self):
         from app.main import SimpleTokenVerifier
 
         verifier = SimpleTokenVerifier()
-        token = asyncio.run(verifier.verify_token(settings.api_password))
+        token = asyncio.run(verifier.verify_token(settings.mcp_password))
         self.assertIsNotNone(token)
 
     def test_token_verifier_rejects_other_values(self):
@@ -295,7 +295,7 @@ class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):
             app = main.mcp.streamable_http_app()
             async with main.mcp.session_manager.run():
                 transport = httpx.ASGITransport(app=app)
-                headers = {"Authorization": f"Bearer {settings.api_password}"}
+                headers = {"Authorization": f"Bearer {settings.mcp_password}"}
 
                 async with httpx.AsyncClient(
                     transport=transport,

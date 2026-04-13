@@ -59,7 +59,7 @@ EMBEDDING_API_KEY=sk-your-key
 EMBEDDING_URL=https://api.openai.com/v1/embeddings
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIMENSION=1536
-API_PASSWORD=change-me
+MCP_PASSWORD=change-me
 ```
 
 Optional LLM-backed answering:
@@ -97,9 +97,9 @@ An empty but connected database is still considered ready.
 
 ## Authentication
 
-When `API_USERNAME` and `API_PASSWORD` are set, the MCP endpoint uses bearer token verification based on `API_PASSWORD`.
+When `MCP_USERNAME` and `MCP_PASSWORD` are set, the MCP endpoint uses bearer token verification based on `MCP_PASSWORD`.
 
-- MCP HTTP auth: `Authorization: Bearer <API_PASSWORD>`
+- MCP HTTP auth: `Authorization: Bearer <MCP_PASSWORD>`
 - Health endpoints: no auth
 - Default credentials are for local development only
 

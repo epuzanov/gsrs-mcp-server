@@ -47,7 +47,7 @@ class SimpleTokenVerifier(TokenVerifier):
     """Validates Bearer tokens against configured API credentials."""
 
     async def verify_token(self, token: str) -> Optional[AccessToken]:
-        if token == settings.api_password:
+        if token == settings.mcp_password:
             return AccessToken(
                 token=token,
                 client_id="mcp-client",
@@ -95,10 +95,10 @@ async def server_lifespan(server):
 # ---------------------------------------------------------------------------
 auth = None
 token_verifier = None
-if settings.api_username and settings.api_password:
+if settings.mcp_username and settings.mcp_password:
     auth = AuthSettings(
         issuer_url=AnyHttpUrl("http://localhost"),
-        resource_server_url=AnyHttpUrl(f"http://localhost:{settings.api_port}"),
+        resource_server_url=AnyHttpUrl(f"http://localhost:{settings.mcp_port}"),
         required_scopes=["mcp:tools"],
     )
     token_verifier = SimpleTokenVerifier()
@@ -112,8 +112,8 @@ mcp = FastMCP(
     ),
     token_verifier=token_verifier,
     auth=auth,
-    host=settings.api_host,
-    port=settings.api_port,
+    host=settings.mcp_api,
+    port=settings.mcp_port,
     streamable_http_path="/mcp",
     lifespan=server_lifespan,
 )
@@ -248,8 +248,8 @@ def _group_by_substance(results, exclude_self: bool = True,
 
 
 def _is_gsrs_substance(data: Dict[str, Any]) -> bool:
-    keys = {"uuid", "names", "codes", "classifications", "relationships",
-            "structure", "properties", "references", "notes"}
+    keys = {"uuid", "names", "codes", "relationships",
+            "properties", "references", "notes"}
     return len(keys.intersection(data.keys())) >= 2
 
 

@@ -71,13 +71,13 @@ class Settings(BaseSettings):
     chunker_include_classification_chunk: bool = _get_bool_env("CHUNKER_INCLUDE_CLASSIFICATION_CHUNK", True)
     chunker_include_grouped_relationship_summaries: bool = _get_bool_env("CHUNKER_INCLUDE_GROUPED_RELATIONSHIP_SUMMARIES", True)
 
-    # API
-    api_host: str = os.getenv("MCP_HOST", os.getenv("API_HOST", "0.0.0.0"))
-    api_port: int = int(os.getenv("MCP_PORT", os.getenv("API_PORT", "8000")))
+    # MCP endpoint
+    mcp_api: str = os.getenv("MCP_API", "0.0.0.0")
+    mcp_port: int = int(os.getenv("MCP_PORT", "8000"))
 
     # Authentication
-    api_username: str = os.getenv("API_USERNAME", "admin")
-    api_password: str = os.getenv("API_PASSWORD", "admin123")
+    mcp_username: str = os.getenv("MCP_USERNAME", "admin")
+    mcp_password: str = os.getenv("MCP_PASSWORD", "admin123")
 
     # Vector Search
     default_top_k: int = int(os.getenv("DEFAULT_TOP_K", "5"))

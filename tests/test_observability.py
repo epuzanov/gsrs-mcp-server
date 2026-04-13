@@ -50,12 +50,12 @@ class TestObservability(unittest.TestCase):
             args=(),
             exc_info=None,
         )
-        record.api_password = "super-secret"
+        record.mcp_password = "super-secret"
         record.headers = {"Authorization": "Bearer top-secret"}
         record.debug = {"token": "abc123", "safe": "value"}
 
         payload = json.loads(formatter.format(record))
-        self.assertEqual(payload["api_password"], "[REDACTED]")
+        self.assertEqual(payload["mcp_password"], "[REDACTED]")
         self.assertEqual(payload["headers"]["Authorization"], "[REDACTED]")
         self.assertEqual(payload["debug"]["token"], "[REDACTED]")
         self.assertEqual(payload["debug"]["safe"], "value")

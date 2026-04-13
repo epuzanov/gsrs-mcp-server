@@ -1,5 +1,6 @@
 ### Changed
 - Standardized repository/package naming on `gsrs-mcp-server` and removed the legacy `gsrs-gateway` console-script alias.
+- Renamed MCP auth and bind settings to `MCP_USERNAME`, `MCP_PASSWORD`, `mcp_api`, and `mcp_port` to match the server's MCP-first runtime contract.
 - Rewrote the README, configuration docs, API docs, and examples to describe the MCP-first runtime and current transport/auth model.
 - Separated liveness and readiness with `/livez`, `/readyz`, and a structured `/health` snapshot.
 - Added startup/runtime component validation, structured logging, light in-memory metrics, and clearer degraded-mode behavior.

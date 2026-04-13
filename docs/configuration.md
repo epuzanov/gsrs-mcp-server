@@ -38,17 +38,15 @@ If `LLM_API_KEY` is empty, `gsrs_ask` stays available in retrieval-only mode.
 - `MCP_TRANSPORT`
   - `streamable-http`
   - `stdio`
-- `MCP_HOST`
+- `MCP_API`
 - `MCP_PORT`
-
-`API_HOST` and `API_PORT` are still accepted for compatibility, but `MCP_HOST` and `MCP_PORT` are the preferred names.
 
 ### Authentication
 
-- `API_USERNAME`
-- `API_PASSWORD`
+- `MCP_USERNAME`
+- `MCP_PASSWORD`
 
-For the HTTP MCP endpoint, bearer token verification uses `API_PASSWORD` as the token value.
+For the HTTP MCP endpoint, bearer token verification uses `MCP_PASSWORD` as the token value.
 
 ### GSRS upstream tools
 
