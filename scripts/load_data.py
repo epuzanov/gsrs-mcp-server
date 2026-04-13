@@ -43,6 +43,7 @@ import asyncio
 import gzip
 import json
 import logging
+import os
 import re
 import sys
 from contextlib import AsyncExitStack
@@ -189,7 +190,7 @@ class MCPToolClient:
                 logger.warning("Ignoring bearer token for stdio transport.")
             server = StdioServerParameters(
                 command=self.connection.command,
-                env={"MCP_TRANSPORT": "stdio"},
+                env={**os.environ, "MCP_TRANSPORT": "stdio"},
             )
             read_stream, write_stream = await stack.enter_async_context(stdio_client(server))
         elif self.connection.transport == "http":

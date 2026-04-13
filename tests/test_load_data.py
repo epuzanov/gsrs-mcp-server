@@ -287,6 +287,44 @@ class TestMCPToolClient(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "Embedding provider is down"):
             await client.ensure_ingest_available()
 
+    async def test_stdio_client_preserves_parent_environment(self):
+        seen = {}
+
+        class DummyStack:
+            async def __aenter__(self):
+                return ("read-stream", "write-stream")
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class DummySession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                return type("ToolList", (), {"tools": []})()
+
+        def fake_stdio_client(server):
+            seen["env"] = server.env
+            return DummyStack()
+
+        with patch.dict(os.environ, {"EMBEDDING_API_KEY": "test-key", "DATABASE_URL": "postgresql://example"}, clear=False), \
+             patch("scripts.load_data.stdio_client", side_effect=fake_stdio_client), \
+             patch("scripts.load_data.ClientSession", return_value=DummySession()):
+            client = MCPToolClient(MCPConnectionSettings(transport="stdio"))
+            await client.__aenter__()
+            await client.__aexit__(None, None, None)
+
+        self.assertEqual(seen["env"]["MCP_TRANSPORT"], "stdio")
+        self.assertEqual(seen["env"]["EMBEDDING_API_KEY"], "test-key")
+        self.assertEqual(seen["env"]["DATABASE_URL"], "postgresql://example")
+
 
 class TestFetchSubstanceByUuid(unittest.IsolatedAsyncioTestCase):
     """Tests for fetching substances from GSRS API."""
