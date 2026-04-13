@@ -14,8 +14,6 @@
 - CLI: `gsrs-mcp-server`
 - Empty-but-connected vector stores are healthy and ready
 
-This repository no longer documents or relies on legacy REST-style routes such as `/ingest` or `/query`. The public contract is the MCP tool surface plus the health endpoints above.
-
 Quick start from the repo root:
 
 ```bash
