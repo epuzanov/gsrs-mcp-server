@@ -64,6 +64,7 @@ class ServerRuntime:
         self.query_pipeline: QueryPipelineService | None = None
         self.components: dict[str, ComponentStatus] = {}
         self.started_at: datetime | None = None
+        self.initialized = False
 
     @property
     def backend_name(self) -> str:
@@ -82,6 +83,7 @@ class ServerRuntime:
         """Initialize runtime services and capture readiness state."""
         self.components = {}
         self.started_at = datetime.now(timezone.utc)
+        self.initialized = False
 
         self._initialize_vector_db()
         self._validate_embedding_provider()
@@ -89,6 +91,7 @@ class ServerRuntime:
         self._initialize_query_pipeline()
         self._validate_llm_provider()
         self._validate_gsrs_api()
+        self.initialized = True
 
     def shutdown(self) -> None:
         """Close long-lived clients and database connections."""
@@ -96,6 +99,7 @@ class ServerRuntime:
         self.embedding_service.close()
         if self.llm_service is not None:
             self.llm_service.close()
+        self.initialized = False
 
     def get_component(self, name: str) -> ComponentStatus | None:
         return self.components.get(name)
@@ -103,7 +107,7 @@ class ServerRuntime:
     def get_status_payload(self) -> dict[str, Any]:
         """Return a structured health/readiness payload."""
         payload = {
-            "status": "ready" if self.ready else "starting_or_degraded",
+            "status": self.runtime_status,
             "ready": self.ready,
             "degraded": self.degraded,
             "backend": self.backend_name,
@@ -124,10 +128,45 @@ class ServerRuntime:
             payload["statistics"] = vector_status.details.get("statistics", {})
         return payload
 
+    @property
+    def runtime_status(self) -> str:
+        """Return a deterministic runtime state label for health endpoints."""
+        if not self.initialized and not self.components:
+            return "starting"
+        if self.ready and self.degraded:
+            return "ready_degraded"
+        if self.ready:
+            return "ready"
+        return "not_ready"
+
+    def _component_ready(self, name: str, *, default: bool = False) -> bool:
+        component = self.components.get(name)
+        if component is None:
+            return default
+        return component.ready
+
+    def _component_error(self, name: str, default: str) -> str:
+        component = self.components.get(name)
+        if component and component.error:
+            return component.error
+        return default
+
+    def vector_backend_available(self) -> bool:
+        return self._component_ready("vector_db")
+
+    def vector_backend_unavailable_reason(self) -> str:
+        return self._component_error("vector_db", "Vector database is not ready.")
+
+    def metadata_lookup_available(self) -> bool:
+        return self.vector_backend_available()
+
+    def metadata_lookup_unavailable_reason(self) -> str:
+        return self.vector_backend_unavailable_reason()
+
     def retrieval_available(self) -> bool:
         return (
-            self.components.get("vector_db", ComponentStatus("", True, False)).ready
-            and self.components.get("embedding", ComponentStatus("", True, False)).ready
+            self.vector_backend_available()
+            and self._component_ready("embedding")
             and self.query_pipeline is not None
         )
 
@@ -136,11 +175,37 @@ class ServerRuntime:
         return bool(llm_status and llm_status.ready and self.query_pipeline is not None)
 
     def retrieval_unavailable_reason(self) -> str:
-        if self.components.get("vector_db") and not self.components["vector_db"].ready:
-            return self.components["vector_db"].error or "Vector database is not ready."
-        if self.components.get("embedding") and not self.components["embedding"].ready:
-            return self.components["embedding"].error or "Embedding provider is not ready."
+        if not self.vector_backend_available():
+            return self.vector_backend_unavailable_reason()
+        if not self._component_ready("embedding"):
+            return self._component_error("embedding", "Embedding provider is not ready.")
         return "Retrieval pipeline is not ready."
+
+    def ingestion_available(self) -> bool:
+        return (
+            self.vector_backend_available()
+            and self._component_ready("embedding")
+            and self._component_ready("chunker")
+            and self.chunker is not None
+        )
+
+    def ingestion_unavailable_reason(self) -> str:
+        if not self.vector_backend_available():
+            return self.vector_backend_unavailable_reason()
+        if not self._component_ready("embedding"):
+            return self._component_error("embedding", "Embedding provider is not ready.")
+        if not self._component_ready("chunker") or self.chunker is None:
+            return self._component_error("chunker", "Chunker is not ready.")
+        return "Ingestion pipeline is not ready."
+
+    def gsrs_api_available(self) -> bool:
+        return self._component_ready("gsrs_api")
+
+    def gsrs_api_unavailable_reason(self) -> str:
+        return self._component_error(
+            "gsrs_api",
+            "GSRS upstream service is not ready.",
+        )
 
     def _set_component(
         self,
@@ -278,9 +343,9 @@ class ServerRuntime:
     @property
     def retrieval_available_for_initialization(self) -> bool:
         return (
-            self.components.get("vector_db", ComponentStatus("", True, False)).ready
-            and self.components.get("embedding", ComponentStatus("", True, False)).ready
-            and self.components.get("chunker", ComponentStatus("", True, False)).ready
+            self.vector_backend_available()
+            and self._component_ready("embedding")
+            and self._component_ready("chunker")
         )
 
     def _validate_llm_provider(self) -> None:
@@ -339,4 +404,3 @@ class ServerRuntime:
 
         details["validated_via"] = "configuration"
         self._set_component("gsrs_api", required=False, ready=True, details=details)
-

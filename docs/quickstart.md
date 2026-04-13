@@ -57,6 +57,7 @@ Interpretation:
 
 - `/livez` should return `{"status":"alive"}`
 - `/readyz` should return HTTP `200` when retrieval dependencies are ready
+- `/health` should include a `status` field of `ready`, `ready_degraded`, or `not_ready`
 - an empty but connected vector database is still ready
 
 ## 5. Load Data

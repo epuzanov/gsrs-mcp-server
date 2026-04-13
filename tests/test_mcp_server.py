@@ -31,6 +31,9 @@ class FakeVectorDb:
     def delete_documents_by_substance(self, substance_uuid):
         return 1
 
+    def search_by_example(self, example, top_k=20, mode="match"):
+        return []
+
 
 class FakeQueryPipeline:
     def __init__(self):
@@ -53,24 +56,35 @@ class FakeQueryPipeline:
 
 
 class FakeRuntime:
-    def __init__(self, *, ready=True, retrieval_ready=True):
+    def __init__(
+        self,
+        *,
+        ready=True,
+        retrieval_ready=True,
+        vector_ready=True,
+        chunker_ready=True,
+        gsrs_api_ready=True,
+    ):
         self.backend_name = "chroma"
         self.ready = ready
-        self.degraded = not retrieval_ready
+        self.degraded = not retrieval_ready or not gsrs_api_ready
         self.metrics = FakeMetrics()
         self.vector_db = FakeVectorDb()
         self.query_pipeline = FakeQueryPipeline()
-        self.chunker = object()
+        self.chunker = object() if chunker_ready else None
         self.llm_service = None
-        self.gsrs_api = None
+        self.gsrs_api = object()
         self._retrieval_ready = retrieval_ready
+        self._vector_ready = vector_ready
+        self._chunker_ready = chunker_ready
+        self._gsrs_api_ready = gsrs_api_ready
         self.initialized = False
         self.stopped = False
         self.components = {
             "vector_db": SimpleNamespace(
-                ready=True,
+                ready=vector_ready,
                 required=True,
-                error=None,
+                error=None if vector_ready else "Vector backend initialization failed: database is offline.",
                 details={"statistics": {"total_chunks": 0, "total_substances": 0}},
             ),
             "embedding": SimpleNamespace(
@@ -85,6 +99,18 @@ class FakeRuntime:
                 error="Answer generation provider unavailable.",
                 details={},
             ),
+            "chunker": SimpleNamespace(
+                ready=chunker_ready,
+                required=True,
+                error=None if chunker_ready else "Chunker initialization failed: gsrs model is unavailable.",
+                details={},
+            ),
+            "gsrs_api": SimpleNamespace(
+                ready=gsrs_api_ready,
+                required=False,
+                error=None if gsrs_api_ready else "GSRS upstream validation failed: timed out.",
+                details={"base_url": "https://gsrs.example.test/api/v1"},
+            ),
         }
 
     def initialize(self):
@@ -95,7 +121,7 @@ class FakeRuntime:
 
     def get_status_payload(self):
         return {
-            "status": "ready" if self.ready else "starting_or_degraded",
+            "status": "ready_degraded" if self.ready and self.degraded else ("ready" if self.ready else "not_ready"),
             "ready": self.ready,
             "degraded": self.degraded,
             "backend": self.backend_name,
@@ -103,19 +129,49 @@ class FakeRuntime:
             "components": {
                 "vector_db": {
                     "required": True,
-                    "ready": True,
-                    "error": None,
+                    "ready": self._vector_ready,
+                    "error": None if self._vector_ready else "Vector backend initialization failed: database is offline.",
                     "details": {"statistics": {"total_chunks": 0, "total_substances": 0}},
                 },
             },
             "metrics": self.metrics.snapshot(),
         }
 
+    def vector_backend_available(self):
+        return self._vector_ready
+
+    def vector_backend_unavailable_reason(self):
+        return "Vector backend initialization failed: database is offline."
+
+    def metadata_lookup_available(self):
+        return self._vector_ready
+
+    def metadata_lookup_unavailable_reason(self):
+        return self.vector_backend_unavailable_reason()
+
     def retrieval_available(self):
-        return self._retrieval_ready
+        return self._vector_ready and self._retrieval_ready
 
     def retrieval_unavailable_reason(self):
+        if not self._vector_ready:
+            return self.vector_backend_unavailable_reason()
         return "Embedding provider is not ready."
+
+    def ingestion_available(self):
+        return self._vector_ready and self._retrieval_ready and self._chunker_ready
+
+    def ingestion_unavailable_reason(self):
+        if not self._vector_ready:
+            return self.vector_backend_unavailable_reason()
+        if not self._retrieval_ready:
+            return "Embedding provider is not ready."
+        return "Chunker initialization failed: gsrs model is unavailable."
+
+    def gsrs_api_available(self):
+        return self._gsrs_api_ready
+
+    def gsrs_api_unavailable_reason(self):
+        return "GSRS upstream validation failed: timed out."
 
 
 class TestMCPConfig(unittest.TestCase):
@@ -163,6 +219,18 @@ class TestHealthRoutes(unittest.TestCase):
         self.assertIn("components", payload)
         self.assertFalse(payload["ready"])
 
+    def test_health_reports_ready_degraded_status_when_optional_dependency_is_down(self):
+        from app import main
+
+        with patch.object(main, "runtime", FakeRuntime(ready=True, retrieval_ready=True, gsrs_api_ready=False)):
+            response = asyncio.run(main.health_check(None))
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.body)
+        self.assertEqual(payload["status"], "ready_degraded")
+        self.assertTrue(payload["ready"])
+        self.assertTrue(payload["degraded"])
+
 
 class TestToolBehavior(unittest.TestCase):
     def test_gsrs_ask_reports_runtime_unavailable(self):
@@ -173,6 +241,32 @@ class TestToolBehavior(unittest.TestCase):
 
         self.assertIn("Retrieval is currently unavailable", output)
         self.assertIn("Embedding provider is not ready", output)
+
+    def test_gsrs_ingest_reports_chunker_specific_failure(self):
+        from app import main
+
+        with patch.object(main, "runtime", FakeRuntime(ready=False, retrieval_ready=True, chunker_ready=False)):
+            output = asyncio.run(main.gsrs_ingest("{}"))
+
+        self.assertIn("Ingestion is currently unavailable", output)
+        self.assertIn("Chunker initialization failed", output)
+
+    def test_gsrs_api_search_reports_upstream_unavailable(self):
+        from app import main
+
+        with patch.object(main, "runtime", FakeRuntime(ready=True, retrieval_ready=True, gsrs_api_ready=False)):
+            output = asyncio.run(main.gsrs_api_search("aspirin"))
+
+        self.assertIn("GSRS API search is currently unavailable", output)
+        self.assertIn("GSRS upstream validation failed", output)
+
+    def test_similarity_search_only_requires_vector_backend(self):
+        from app import main
+
+        with patch.object(main, "runtime", FakeRuntime(ready=False, retrieval_ready=False, vector_ready=True)):
+            output = asyncio.run(main.gsrs_similarity_search('{"uuid":"12345678-1234-1234-1234-123456789abc"}'))
+
+        self.assertIn("No similar substances found", output)
 
 
 class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):

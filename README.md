@@ -33,9 +33,10 @@ Runtime flow:
 
 1. Startup builds a shared runtime with the configured vector backend, embedding client, optional LLM client, GSRS upstream client, and GSRS chunker.
 2. `/livez` reports process liveness only.
-3. `/readyz` reports whether the runtime is ready for retrieval and ingest.
+3. `/readyz` reports whether the runtime is ready for core retrieval and ingest capabilities.
 4. `gsrs_ask` uses query rewrite, metadata filter inference, identifier-first routing, hybrid retrieval, reranking, evidence extraction, abstention, and optional answer generation.
 5. If answer generation is unavailable, `gsrs_ask` degrades to retrieval-grounded fallback output instead of failing.
+6. Tool availability is capability-specific: similarity search only requires the vector backend, while `gsrs_api_*` tools depend on GSRS upstream readiness.
 
 ## Quick Start
 
@@ -157,6 +158,13 @@ Or ingest through MCP with `gsrs_ingest`.
 - `/readyz`: runtime is initialized and retrieval dependencies are usable
 - `/health`: combined snapshot with component state and light in-memory metrics
 
+`/health` returns a deterministic `status` field:
+
+- `starting`: startup has not finished yet
+- `ready`: required components are ready
+- `ready_degraded`: required components are ready, but one or more optional components are unavailable
+- `not_ready`: one or more required components failed initialization
+
 Readiness depends on:
 
 - vector backend initialization
@@ -170,6 +178,13 @@ Optional components:
 - GSRS upstream API tools
 
 If optional components are unavailable, the server stays up and reports a degraded state.
+
+Tool degradation is explicit:
+
+- `gsrs_ask` falls back to retrieval-grounded output when answer generation is unavailable
+- `gsrs_similarity_search` still works when the vector backend is healthy, even if embeddings are unavailable
+- `gsrs_ingest` reports chunker or embedding failures specifically instead of returning a generic retrieval error
+- `gsrs_api_*` tools fail fast with a GSRS-upstream-specific message when the upstream dependency is unavailable
 
 ## Debug and Observability
 

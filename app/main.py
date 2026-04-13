@@ -431,8 +431,8 @@ async def gsrs_similarity_search(
     """
     tool = _tool_call("gsrs_similarity_search")
     try:
-        if not runtime.retrieval_available():
-            reason = runtime.retrieval_unavailable_reason()
+        if not runtime.metadata_lookup_available():
+            reason = runtime.metadata_lookup_unavailable_reason()
             tool.finish(
                 "degraded",
                 result_count=0,
@@ -546,8 +546,8 @@ async def gsrs_ingest(substance_json: str) -> str:
     """
     tool = _tool_call("gsrs_ingest")
     try:
-        if not runtime.retrieval_available() or runtime.chunker is None:
-            reason = runtime.retrieval_unavailable_reason()
+        if not runtime.ingestion_available():
+            reason = runtime.ingestion_unavailable_reason()
             tool.finish(
                 "degraded",
                 result_count=0,
@@ -596,6 +596,16 @@ async def gsrs_delete(substance_uuid: str) -> str:
     """
     tool = _tool_call("gsrs_delete")
     try:
+        if not runtime.vector_backend_available():
+            reason = runtime.vector_backend_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"Deletion is currently unavailable: {reason}"
         count = runtime.vector_db.delete_documents_by_substance(UUID(substance_uuid))
         tool.finish("success", result_count=count, citation_count=0)
         return f"Deleted **{substance_uuid}** - {count} chunks removed."
@@ -618,6 +628,16 @@ async def gsrs_statistics() -> str:
     """Return database statistics (chunk count, substance count)."""
     tool = _tool_call("gsrs_statistics")
     try:
+        if not runtime.vector_backend_available():
+            reason = runtime.vector_backend_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"Statistics are currently unavailable: {reason}"
         stats = runtime.vector_db.get_statistics()
         tool.finish("success", result_count=0, citation_count=0)
         return json.dumps(stats, indent=2)
@@ -753,6 +773,16 @@ async def gsrs_get_document(substance_uuid: str) -> str:
     """
     tool = _tool_call("gsrs_get_document")
     try:
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"GSRS upstream is currently unavailable: {reason}"
         doc = runtime.gsrs_api.get_substance_by_uuid(substance_uuid)
         tool.finish("success" if doc else "abstained", result_count=1 if doc else 0, citation_count=0)
     except Exception as exc:
@@ -789,6 +819,16 @@ async def gsrs_api_search(
     """
     tool = _tool_call("gsrs_api_search")
     try:
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"GSRS API search is currently unavailable: {reason}"
         resp = runtime.gsrs_api.text_search(query, page=page, size=size, fields=fields or None)
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
@@ -839,6 +879,16 @@ async def gsrs_api_structure_search(
 
     tool = _tool_call("gsrs_api_structure_search")
     try:
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"GSRS structure search is currently unavailable: {reason}"
         resp = runtime.gsrs_api.structure_search(
             smiles=smiles or None,
             inchi=inchi or None,
@@ -892,6 +942,16 @@ async def gsrs_api_sequence_search(
 
     tool = _tool_call("gsrs_api_sequence_search")
     try:
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish(
+                "degraded",
+                result_count=0,
+                citation_count=0,
+                error_type="RuntimeUnavailable",
+                error_message=reason,
+            )
+            return f"GSRS sequence search is currently unavailable: {reason}"
         resp = runtime.gsrs_api.sequence_search(
             sequence=sequence,
             search_type=search_type,

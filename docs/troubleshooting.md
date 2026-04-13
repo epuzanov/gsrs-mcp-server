@@ -33,6 +33,22 @@ That usually means the retrieval pipeline is healthy but answer generation is un
 
 The fallback answer is expected behavior.
 
+## `gsrs_ingest` says ingestion is unavailable
+
+The message should point to the specific failed dependency. Common causes:
+
+- embedding provider configuration is missing or invalid
+- the vector backend failed startup
+- chunker dependencies failed to initialize
+
+## `gsrs_api_*` tools fail while `/readyz` is healthy
+
+That is expected when the core retrieval path is healthy but the optional GSRS upstream dependency is degraded. Check `/health` for the `gsrs_api` component and verify:
+
+- `GSRS_API_URL`
+- `GSRS_API_TIMEOUT`
+- network reachability to the upstream GSRS service
+
 ## ChromaDB dimension mismatch
 
 If the existing Chroma collection was created with a different embedding dimension, use a new path or align `EMBEDDING_DIMENSION`.
