@@ -15,6 +15,7 @@
 - Expanded the integration guides and examples for ChatGPT, Open WebUI, Ollama, and OpenAI API remote-MCP usage.
 - Clarified the MCP HTTP auth contract around `MCP_PASSWORD`, added startup/readiness summaries, and made chunker failures degrade ingest without failing retrieval readiness.
 - Expanded tests toward runtime startup/failure semantics, auth enforcement, degraded behavior, identifier routing, grounded golden-set coverage, and MCP transport smoke coverage.
+- Added stable `query_type` telemetry across MCP tools, richer debug diagnostics for degraded runtime state, and stronger `gsrs_ask` transport/tool regression coverage for grounded answers and abstention.
 
 ### Added
 - Initial release

@@ -285,14 +285,36 @@ def _try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _tool_call(tool_name: str) -> ToolTelemetry:
+def _tool_call(tool_name: str, *, query_type: Optional[str] = None) -> ToolTelemetry:
     """Create a telemetry context for a tool call."""
     return ToolTelemetry.start(
         logger=logger,
         metrics=runtime.metrics,
         tool_name=tool_name,
         backend=runtime.backend_name,
+        query_type=query_type,
     )
+
+
+def _query_type_from_retrieval_mode(
+    retrieval_mode: Optional[str],
+    *,
+    default: str = "question",
+) -> str:
+    """Map retrieval routing decisions to a stable telemetry/debug query type."""
+    if retrieval_mode and retrieval_mode.startswith("identifier-first:"):
+        return retrieval_mode.split(":", 1)[1]
+    return default
+
+
+def _runtime_debug_state() -> Dict[str, Any]:
+    """Expose lightweight degraded-state context for local diagnostics."""
+    return {
+        "ready": runtime.ready,
+        "degraded": runtime.degraded,
+        "backend": runtime.backend_name,
+        "degraded_summary": runtime.degraded_summary,
+    }
 
 
 def _format_ask_response(response) -> str:
@@ -372,12 +394,13 @@ async def gsrs_ask(
     Returns:
         Answer with citations, or similar-substance report.
     """
-    tool = _tool_call("gsrs_ask")
+    tool = _tool_call("gsrs_ask", query_type="question")
     try:
         parsed = _try_parse_json(query)
         substance = parsed if parsed and _is_gsrs_substance(parsed) else None
 
         if substance:
+            tool.bind(query_type="substance_json")
             example = _extract_search_criteria(substance)
             results = runtime.vector_db.search_by_example(
                 example=example, top_k=top_k, mode="contains",
@@ -420,9 +443,17 @@ async def gsrs_ask(
             debug=debug or settings.debug_mode,
         )
         response, diagnostics = runtime.query_pipeline.ask_with_diagnostics(request)
+        tool.bind(
+            query_type=_query_type_from_retrieval_mode(
+                diagnostics.get("retrieval_mode"),
+                default="question",
+            )
+        )
         _emit_pipeline_stages(tool, diagnostics)
         if response.debug is not None:
             response.debug["request_id"] = tool.request_id
+            response.debug["query_type"] = tool.context.get("query_type", "question")
+            response.debug["runtime_state"] = _runtime_debug_state()
         tool.finish(
             "success" if not response.abstained else "abstained",
             result_count=len(response.evidence_chunks),
@@ -460,7 +491,7 @@ async def gsrs_similarity_search(
     Returns:
         Ranked similar substances with match scores.
     """
-    tool = _tool_call("gsrs_similarity_search")
+    tool = _tool_call("gsrs_similarity_search", query_type="substance_json")
     try:
         if not runtime.metadata_lookup_available():
             reason = runtime.metadata_lookup_unavailable_reason()
@@ -524,7 +555,7 @@ async def gsrs_retrieve(
     Returns:
         Ranked text chunks with scores.
     """
-    tool = _tool_call("gsrs_retrieve")
+    tool = _tool_call("gsrs_retrieve", query_type="semantic")
     try:
         if not runtime.retrieval_available():
             reason = runtime.retrieval_unavailable_reason()
@@ -546,6 +577,12 @@ async def gsrs_retrieve(
             embedding = runtime.embedding_service.embed(query)
             results = runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=parsed_filters)
             retrieval_mode = "semantic"
+        tool.bind(
+            query_type=_query_type_from_retrieval_mode(
+                retrieval_mode,
+                default="semantic",
+            )
+        )
 
         tool.stage(
             "retrieval",
@@ -566,8 +603,10 @@ async def gsrs_retrieve(
                 + json.dumps(
                     {
                         "request_id": tool.request_id,
+                        "query_type": tool.context.get("query_type", "semantic"),
                         "retrieval_mode": retrieval_mode,
                         "filters": parsed_filters,
+                        "runtime_state": _runtime_debug_state(),
                         "results": [
                             {
                                 "chunk_id": result.document.chunk_id,
@@ -599,7 +638,7 @@ async def gsrs_ingest(substance_json: str) -> str:
     Returns:
         Ingestion result.
     """
-    tool = _tool_call("gsrs_ingest")
+    tool = _tool_call("gsrs_ingest", query_type="substance_json")
     try:
         if not runtime.ingestion_available():
             reason = runtime.ingestion_unavailable_reason()
@@ -649,7 +688,7 @@ async def gsrs_delete(substance_uuid: str) -> str:
     Returns:
         Deletion confirmation.
     """
-    tool = _tool_call("gsrs_delete")
+    tool = _tool_call("gsrs_delete", query_type="uuid")
     try:
         if not runtime.vector_backend_available():
             reason = runtime.vector_backend_unavailable_reason()
@@ -672,7 +711,7 @@ async def gsrs_delete(substance_uuid: str) -> str:
 @mcp.tool()
 async def gsrs_health() -> str:
     """Return structured runtime health and readiness information."""
-    tool = _tool_call("gsrs_health")
+    tool = _tool_call("gsrs_health", query_type="runtime")
     payload = runtime.get_status_payload()
     tool.finish("success", result_count=0, citation_count=0)
     return json.dumps(payload, indent=2)
@@ -681,7 +720,7 @@ async def gsrs_health() -> str:
 @mcp.tool()
 async def gsrs_statistics() -> str:
     """Return database statistics (chunk count, substance count)."""
-    tool = _tool_call("gsrs_statistics")
+    tool = _tool_call("gsrs_statistics", query_type="statistics")
     try:
         if not runtime.vector_backend_available():
             reason = runtime.vector_backend_unavailable_reason()
@@ -724,7 +763,7 @@ async def gsrs_aggregation(
     Returns:
         Formatted aggregation result (counts, lists, summaries).
     """
-    tool = _tool_call("gsrs_aggregation")
+    tool = _tool_call("gsrs_aggregation", query_type=aggregation_type)
     try:
         if not runtime.retrieval_available():
             reason = runtime.retrieval_unavailable_reason()
@@ -736,6 +775,7 @@ async def gsrs_aggregation(
         filter_builder = MetadataFilterBuilder()
 
         rewrite_result = rewriter.rewrite(query)
+        tool.bind(query_type=rewrite_result.intent)
         queries = [rewrite_result.canonical_query] + rewrite_result.rewrites
         applied_filters = filter_builder.build(inferred_filters=rewrite_result.filters)
 
@@ -784,7 +824,7 @@ async def gsrs_query_optimizer(
     Returns:
         Optimised query variants.
     """
-    tool = _tool_call("gsrs_query_optimizer")
+    tool = _tool_call("gsrs_query_optimizer", query_type=mode)
     try:
         rewriter = QueryRewriteService()
         rewrite_result = rewriter.rewrite(query)
@@ -826,7 +866,7 @@ async def gsrs_get_document(substance_uuid: str) -> str:
     Returns:
         Full substance JSON or an error message.
     """
-    tool = _tool_call("gsrs_get_document")
+    tool = _tool_call("gsrs_get_document", query_type="uuid")
     try:
         if not runtime.gsrs_api_available():
             reason = runtime.gsrs_api_unavailable_reason()
@@ -872,7 +912,7 @@ async def gsrs_api_search(
     Returns:
         Search results as formatted text with UUID, name, and substance class.
     """
-    tool = _tool_call("gsrs_api_search")
+    tool = _tool_call("gsrs_api_search", query_type="text")
     try:
         if not runtime.gsrs_api_available():
             reason = runtime.gsrs_api_unavailable_reason()
@@ -932,7 +972,7 @@ async def gsrs_api_structure_search(
     if not smiles and not inchi:
         return "Error: provide either **smiles** or **inchi**."
 
-    tool = _tool_call("gsrs_api_structure_search")
+    tool = _tool_call("gsrs_api_structure_search", query_type="structure")
     try:
         if not runtime.gsrs_api_available():
             reason = runtime.gsrs_api_unavailable_reason()
@@ -995,7 +1035,7 @@ async def gsrs_api_sequence_search(
     if not sequence or len(sequence) < 3:
         return "Error: sequence must be at least 3 characters."
 
-    tool = _tool_call("gsrs_api_sequence_search")
+    tool = _tool_call("gsrs_api_sequence_search", query_type="sequence")
     try:
         if not runtime.gsrs_api_available():
             reason = runtime.gsrs_api_unavailable_reason()

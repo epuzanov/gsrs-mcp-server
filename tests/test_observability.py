@@ -6,6 +6,15 @@ import unittest
 from app.observability import InMemoryMetrics, JsonLogFormatter, ToolTelemetry
 
 
+class _CaptureHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
 class TestObservability(unittest.TestCase):
     def test_json_formatter_includes_structured_fields(self):
         formatter = JsonLogFormatter()
@@ -38,6 +47,31 @@ class TestObservability(unittest.TestCase):
         self.assertEqual(snapshot["counters"]["tool_calls.gsrs_health"], 1)
         self.assertEqual(snapshot["counters"]["tool_stage.gsrs_health.runtime_check.success"], 1)
         self.assertEqual(snapshot["counters"]["tool_outcomes.gsrs_health.success"], 1)
+
+    def test_tool_telemetry_preserves_bound_query_type(self):
+        logger = logging.getLogger("test.telemetry.query_type")
+        logger.handlers = []
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        handler = _CaptureHandler()
+        logger.addHandler(handler)
+        self.addCleanup(logger.removeHandler, handler)
+
+        metrics = InMemoryMetrics()
+        telemetry = ToolTelemetry.start(
+            logger,
+            metrics,
+            "gsrs_ask",
+            "chroma",
+            query_type="question",
+        )
+        telemetry.bind(query_type="code")
+        telemetry.stage("retrieval", outcome="success", retrieval_mode="identifier-first:code")
+        telemetry.finish("success", result_count=1, citation_count=1)
+
+        self.assertEqual(handler.records[0].query_type, "question")
+        self.assertEqual(handler.records[1].query_type, "code")
+        self.assertEqual(handler.records[2].query_type, "code")
 
     def test_json_formatter_redacts_sensitive_fields(self):
         formatter = JsonLogFormatter()

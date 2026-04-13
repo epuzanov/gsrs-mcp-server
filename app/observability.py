@@ -4,7 +4,7 @@ import logging
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
@@ -146,6 +146,7 @@ class ToolTelemetry:
     backend: str
     request_id: str
     started_at: float
+    context: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def start(
@@ -154,8 +155,14 @@ class ToolTelemetry:
         metrics: InMemoryMetrics,
         tool_name: str,
         backend: str,
+        **context: Any,
     ) -> "ToolTelemetry":
         request_id = str(uuid4())
+        sanitized_context = {
+            key: value
+            for key, value in context.items()
+            if value is not None
+        }
         logger.info(
             "tool_started",
             extra={
@@ -163,6 +170,7 @@ class ToolTelemetry:
                 "tool_name": tool_name,
                 "backend": backend,
                 "outcome": "started",
+                **sanitized_context,
             },
         )
         metrics.increment(f"tool_calls.{tool_name}")
@@ -173,7 +181,14 @@ class ToolTelemetry:
             backend=backend,
             request_id=request_id,
             started_at=time.perf_counter(),
+            context=sanitized_context,
         )
+
+    def bind(self, **context: Any) -> None:
+        """Attach stable context fields that should appear on every later event."""
+        for key, value in context.items():
+            if value is not None:
+                self.context[key] = value
 
     def finish(self, outcome: str, **fields: Any) -> None:
         latency_ms = round((time.perf_counter() - self.started_at) * 1000, 2)
@@ -183,6 +198,7 @@ class ToolTelemetry:
             "backend": self.backend,
             "latency_ms": latency_ms,
             "outcome": outcome,
+            **self.context,
             **fields,
         }
         self.logger.info("tool_finished", extra=payload)
@@ -197,6 +213,7 @@ class ToolTelemetry:
             "backend": self.backend,
             "stage": stage_name,
             "outcome": outcome,
+            **self.context,
             **fields,
         }
         self.logger.info("tool_stage", extra=payload)

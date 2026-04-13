@@ -222,6 +222,7 @@ Structured JSON logs include fields such as:
 - `request_id`
 - `tool_name`
 - `backend`
+- `query_type`
 - `latency_ms`
 - `outcome`
 - `error_type`
@@ -245,6 +246,7 @@ Set `DEBUG_MODE=true` to include extra runtime detail. You can also pass `debug=
 - reranked chunk IDs and scores
 - applied filters
 - degraded answer-generation state
+- runtime degraded-state summary
 
 Sensitive values such as API keys, passwords, bearer tokens, and authorization headers are redacted from structured logs.
 

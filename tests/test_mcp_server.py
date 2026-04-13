@@ -1,16 +1,19 @@
 """Tests for MCP server wiring, readiness semantics, and MCP smoke paths."""
 import asyncio
+import importlib
 import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from app.config import settings
-from app.models.api import AskResponse
+from app.models.api import AskResponse, Citation, QueryResult
+from app.models.db import VectorDocument
 
 
 class FakeMetrics:
@@ -36,23 +39,89 @@ class FakeVectorDb:
 
 
 class FakeQueryPipeline:
-    def __init__(self):
-        self.identifier_router = None
+    def __init__(self, response=None, diagnostics=None):
+        self._response = response or self._default_response()
+        self._diagnostics = diagnostics or {
+            "retrieval_mode": "hybrid",
+            "answer_generation": {
+                "mode": "template_fallback",
+                "error_type": None,
+            },
+            "stages": [],
+        }
+        self.identifier_router = SimpleNamespace(route=lambda query, top_k=10: None)
 
-    def ask(self, request):
+    def _default_response(self):
+        document = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=uuid4(),
+            section="codes",
+            text="CAS code for aspirin is 50-78-2.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={"canonical_name": "Aspirin", "codes": [{"codeSystem": "CAS", "code": "50-78-2"}]},
+        )
         return AskResponse(
-            query=request.query,
-            rewritten_queries=[request.query],
-            applied_filters={},
-            answer="A grounded answer.",
-            citations=[],
-            evidence_chunks=[],
-            confidence=0.8,
+            query="What is the CAS code for aspirin?",
+            rewritten_queries=["What is the CAS code for aspirin?"],
+            applied_filters={"sections": ["codes"]},
+            answer="The CAS code for aspirin is 50-78-2.",
+            citations=[
+                Citation(
+                    chunk_id=document.chunk_id,
+                    document_id=str(document.document_id),
+                    section=document.section,
+                    quote="CAS code for aspirin is 50-78-2.",
+                )
+            ],
+            evidence_chunks=[QueryResult(chunk=document, score=0.92)],
+            confidence=0.92,
             abstained=False,
             degraded=True,
             degraded_reason="Answer generation provider unavailable; returned retrieval-grounded fallback answer.",
-            debug={"retrieval_mode": "hybrid"} if request.debug else None,
+            debug=None,
         )
+
+    def ask(self, request):
+        response, _ = self.ask_with_diagnostics(request)
+        return response
+
+    def ask_with_diagnostics(self, request):
+        response = self._response.model_copy(deep=True)
+        response.query = request.query
+        if request.debug:
+            response.debug = {
+                "retrieval_mode": self._diagnostics.get("retrieval_mode", "hybrid"),
+            }
+        return response, dict(self._diagnostics)
+
+
+def _make_abstained_response() -> AskResponse:
+    return AskResponse(
+        query="unknown identifier",
+        rewritten_queries=["unknown identifier"],
+        applied_filters={},
+        answer=None,
+        citations=[],
+        evidence_chunks=[],
+        confidence=0.0,
+        abstained=True,
+        abstain_reason="No exact metadata match found for the identifier-first lookup.",
+        degraded=True,
+        degraded_reason="Answer generation provider unavailable; returning retrieval-only response.",
+        debug=None,
+    )
+
+
+def _make_identifier_diagnostics() -> dict:
+    return {
+        "retrieval_mode": "identifier-first:code",
+        "answer_generation": {
+            "mode": "template_fallback",
+            "error_type": None,
+        },
+        "stages": [],
+    }
 
 
 class FakeRuntime:
@@ -70,6 +139,11 @@ class FakeRuntime:
         self.degraded = not retrieval_ready or not gsrs_api_ready
         if not chunker_ready:
             self.degraded = True
+        self.degraded_summary = None if not self.degraded else (
+            "Chunker initialization failed: gsrs model is unavailable."
+            if not chunker_ready
+            else ("GSRS upstream validation failed: timed out." if not gsrs_api_ready else "Optional dependency degraded.")
+        )
         self.metrics = FakeMetrics()
         self.vector_db = FakeVectorDb()
         self.query_pipeline = FakeQueryPipeline()
@@ -310,6 +384,48 @@ class TestToolBehavior(unittest.TestCase):
 
         self.assertIn("No similar substances found", output)
 
+    def test_gsrs_ask_degraded_answer_includes_citations(self):
+        from app import main
+
+        with patch.object(main, "runtime", FakeRuntime(ready=True, retrieval_ready=True)):
+            output = asyncio.run(main.gsrs_ask("What is the CAS code for aspirin?"))
+
+        self.assertIn("Direct answer:", output)
+        self.assertIn("Mode:", output)
+        self.assertIn("Supporting evidence:", output)
+        self.assertIn("Citations:", output)
+        self.assertIn("50-78-2", output)
+
+    def test_gsrs_ask_identifier_debug_output_includes_query_type(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        fake_runtime.query_pipeline = FakeQueryPipeline(
+            diagnostics=_make_identifier_diagnostics()
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(main.gsrs_ask("CAS 50-78-2", debug=True))
+
+        self.assertIn('"query_type": "code"', output)
+        self.assertIn('"retrieval_mode": "identifier-first:code"', output)
+
+    def test_gsrs_ask_abstains_when_no_grounded_answer_is_available(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        fake_runtime.query_pipeline = FakeQueryPipeline(
+            response=_make_abstained_response(),
+            diagnostics=_make_identifier_diagnostics(),
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(main.gsrs_ask("CAS DOES-NOT-EXIST"))
+
+        self.assertIn("Insufficient evidence to answer confidently", output)
+        self.assertIn("Uncertainty:", output)
+        self.assertNotIn("Citations:", output)
+
 
 class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):
     async def test_streamable_http_requires_bearer_token(self):
@@ -330,7 +446,9 @@ class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["error"], "invalid_token")
 
     async def test_streamable_http_smoke_path(self):
-        from app import main
+        from app import main as main_module
+
+        main = importlib.reload(main_module)
 
         fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
         with patch.object(main, "runtime", fake_runtime):
@@ -360,3 +478,37 @@ class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):
                             text_blocks = [block.text for block in result.content if hasattr(block, "text")]
                             combined = "\n".join(text_blocks)
                             self.assertIn('"backend"', combined)
+
+    async def test_streamable_http_query_smoke_path_returns_grounded_answer(self):
+        from app import main as main_module
+
+        main = importlib.reload(main_module)
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        with patch.object(main, "runtime", fake_runtime):
+            app = main.mcp.streamable_http_app()
+            async with main.mcp.session_manager.run():
+                transport = httpx.ASGITransport(app=app)
+                headers = {"Authorization": f"Bearer {settings.mcp_password}"}
+
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                    headers=headers,
+                    timeout=30.0,
+                ) as client:
+                    async with streamable_http_client(
+                        "http://testserver/mcp",
+                        http_client=client,
+                        terminate_on_close=False,
+                    ) as (read_stream, write_stream, _):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            result = await session.call_tool(
+                                "gsrs_ask",
+                                {"query": "What is the CAS code for aspirin?"},
+                            )
+                            text_blocks = [block.text for block in result.content if hasattr(block, "text")]
+                            combined = "\n".join(text_blocks)
+                            self.assertIn("Direct answer:", combined)
+                            self.assertTrue("Citations:" in combined or "Insufficient evidence" in combined)
