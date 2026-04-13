@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class SimpleTokenVerifier(TokenVerifier):
-    """Validates Bearer tokens against configured API credentials."""
+    """Validates HTTP Bearer tokens against the configured MCP password."""
 
     async def verify_token(self, token: str) -> Optional[AccessToken]:
         if token == settings.mcp_password:
@@ -70,22 +70,29 @@ runtime = ServerRuntime(settings)
 async def server_lifespan(server):
     """Initialise shared runtime services on startup."""
     runtime.initialize()
+    status_payload = runtime.get_status_payload()
     logger.info(
         "runtime_initialized",
-        extra={
-            "backend": runtime.backend_name,
-            "ready": runtime.ready,
-            "degraded": runtime.degraded,
-            "components": {
-                name: {
-                    "ready": status.ready,
-                    "required": status.required,
-                    "error": status.error,
-                }
-                for name, status in runtime.components.items()
-            },
-        },
+        extra=status_payload,
     )
+    if not runtime.ready:
+        logger.warning(
+            "runtime_not_ready",
+            extra={
+                "backend": runtime.backend_name,
+                "readiness_summary": runtime.readiness_summary,
+                "required_component_errors": runtime.required_component_errors(),
+            },
+        )
+    elif runtime.degraded:
+        logger.warning(
+            "runtime_degraded",
+            extra={
+                "backend": runtime.backend_name,
+                "degraded_summary": runtime.degraded_summary,
+                "optional_component_errors": runtime.optional_component_errors(),
+            },
+        )
     yield
     runtime.shutdown()
 
@@ -93,15 +100,20 @@ async def server_lifespan(server):
 # ---------------------------------------------------------------------------
 # MCP server
 # ---------------------------------------------------------------------------
-auth = None
-token_verifier = None
-if settings.mcp_username and settings.mcp_password:
-    auth = AuthSettings(
+def _build_auth_settings(app_settings) -> tuple[AuthSettings | None, TokenVerifier | None]:
+    """Build MCP HTTP auth settings from the current runtime configuration."""
+    if not app_settings.mcp_password:
+        return None, None
+
+    auth_settings = AuthSettings(
         issuer_url=AnyHttpUrl("http://localhost"),
-        resource_server_url=AnyHttpUrl(f"http://localhost:{settings.mcp_port}"),
+        resource_server_url=AnyHttpUrl(f"http://localhost:{app_settings.mcp_port}"),
         required_scopes=["mcp:tools"],
     )
-    token_verifier = SimpleTokenVerifier()
+    return auth_settings, SimpleTokenVerifier()
+
+
+auth, token_verifier = _build_auth_settings(settings)
 
 mcp = FastMCP(
     "GSRS MCP Server",

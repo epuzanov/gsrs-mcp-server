@@ -68,6 +68,8 @@ class FakeRuntime:
         self.backend_name = "chroma"
         self.ready = ready
         self.degraded = not retrieval_ready or not gsrs_api_ready
+        if not chunker_ready:
+            self.degraded = True
         self.metrics = FakeMetrics()
         self.vector_db = FakeVectorDb()
         self.query_pipeline = FakeQueryPipeline()
@@ -101,7 +103,7 @@ class FakeRuntime:
             ),
             "chunker": SimpleNamespace(
                 ready=chunker_ready,
-                required=True,
+                required=False,
                 error=None if chunker_ready else "Chunker initialization failed: gsrs model is unavailable.",
                 details={},
             ),
@@ -133,7 +135,25 @@ class FakeRuntime:
                     "error": None if self._vector_ready else "Vector backend initialization failed: database is offline.",
                     "details": {"statistics": {"total_chunks": 0, "total_substances": 0}},
                 },
+                "chunker": {
+                    "required": False,
+                    "ready": self._chunker_ready,
+                    "error": None if self._chunker_ready else "Chunker initialization failed: gsrs model is unavailable.",
+                    "details": {},
+                },
             },
+            "readiness_summary": "Core retrieval dependencies are ready." if self.ready else self.retrieval_unavailable_reason(),
+            "degraded_summary": None if not self.degraded else (
+                "Chunker initialization failed: gsrs model is unavailable."
+                if not self._chunker_ready
+                else "GSRS upstream validation failed: timed out."
+            ),
+            "required_component_errors": {} if self.ready else {"embedding": self.retrieval_unavailable_reason()},
+            "optional_component_errors": (
+                {"chunker": "Chunker initialization failed: gsrs model is unavailable."}
+                if not self._chunker_ready
+                else ({"gsrs_api": "GSRS upstream validation failed: timed out."} if not self._gsrs_api_ready else {})
+            ),
             "metrics": self.metrics.snapshot(),
         }
 
@@ -193,6 +213,16 @@ class TestMCPConfig(unittest.TestCase):
         token = asyncio.run(verifier.verify_token("wrong-token"))
         self.assertIsNone(token)
 
+    def test_auth_settings_enable_bearer_auth_without_username(self):
+        from app.main import _build_auth_settings
+
+        auth, verifier = _build_auth_settings(
+            settings.model_copy(update={"mcp_username": "", "mcp_password": "secret-token"})
+        )
+
+        self.assertIsNotNone(auth)
+        self.assertIsNotNone(verifier)
+
 
 class TestHealthRoutes(unittest.TestCase):
     def test_readyz_reports_empty_database_as_ready(self):
@@ -230,6 +260,18 @@ class TestHealthRoutes(unittest.TestCase):
         self.assertEqual(payload["status"], "ready_degraded")
         self.assertTrue(payload["ready"])
         self.assertTrue(payload["degraded"])
+
+    def test_health_can_be_ready_while_chunker_is_degraded(self):
+        from app import main
+
+        with patch.object(main, "runtime", FakeRuntime(ready=True, retrieval_ready=True, chunker_ready=False)):
+            response = asyncio.run(main.health_check(None))
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.body)
+        self.assertEqual(payload["status"], "ready_degraded")
+        self.assertTrue(payload["ready"])
+        self.assertIn("chunker", payload["optional_component_errors"])
 
 
 class TestToolBehavior(unittest.TestCase):

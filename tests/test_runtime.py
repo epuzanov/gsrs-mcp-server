@@ -66,6 +66,39 @@ class TestServerRuntime(unittest.TestCase):
         self.assertFalse(runtime.vector_backend_available())
         self.assertIn("database unavailable", runtime.vector_backend_unavailable_reason())
         self.assertIsNone(runtime.query_pipeline)
+        payload = runtime.get_status_payload()
+        self.assertIn("vector_db", payload["required_component_errors"])
+        self.assertIn("database unavailable", payload["readiness_summary"])
+
+    def test_chunker_failure_degrades_but_keeps_runtime_ready_for_retrieval(self):
+        runtime = ServerRuntime(_test_settings())
+
+        def mark_chunker_failed():
+            runtime.chunker = None
+            runtime._set_component(
+                "chunker",
+                required=False,
+                ready=False,
+                error="Chunker initialization failed: gsrs model is unavailable.",
+            )
+
+        with patch.object(runtime.vector_db, "connect", MagicMock()), \
+             patch.object(runtime.vector_db, "initialize", MagicMock()), \
+             patch.object(runtime.vector_db, "get_statistics", return_value={"total_chunks": 0, "total_substances": 0}), \
+             patch.object(runtime.embedding_service, "get_model_info", return_value={"model": "test-embedding-model"}), \
+             patch.object(runtime.gsrs_api, "get_status", return_value={"base_url": "https://gsrs.example.test/api/v1"}), \
+             patch.object(runtime, "_initialize_chunker", side_effect=mark_chunker_failed):
+            runtime.initialize()
+
+        self.assertTrue(runtime.initialized)
+        self.assertTrue(runtime.ready)
+        self.assertTrue(runtime.degraded)
+        self.assertEqual(runtime.runtime_status, "ready_degraded")
+        self.assertIsNotNone(runtime.query_pipeline)
+        self.assertFalse(runtime.ingestion_available())
+        payload = runtime.get_status_payload()
+        self.assertIn("chunker", payload["optional_component_errors"])
+        self.assertIn("Chunker initialization failed", payload["degraded_summary"])
 
     def test_shutdown_resets_initialized_flag(self):
         runtime = ServerRuntime(_test_settings())

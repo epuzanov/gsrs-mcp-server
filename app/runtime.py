@@ -104,14 +104,55 @@ class ServerRuntime:
     def get_component(self, name: str) -> ComponentStatus | None:
         return self.components.get(name)
 
+    def required_component_errors(self) -> dict[str, str]:
+        """Return required-component failures keyed by component name."""
+        return {
+            name: status.error or "Component is not ready."
+            for name, status in self.components.items()
+            if status.required and not status.ready
+        }
+
+    def optional_component_errors(self) -> dict[str, str]:
+        """Return degraded optional-component failures keyed by component name."""
+        return {
+            name: status.error or "Component is not ready."
+            for name, status in self.components.items()
+            if not status.required and not status.ready
+        }
+
+    @property
+    def readiness_summary(self) -> str:
+        """Summarize required-component readiness for operators and tests."""
+        if self.ready:
+            return "Core retrieval dependencies are ready."
+        if not self.initialized and not self.components:
+            return "Runtime startup is still in progress."
+
+        failures = self.required_component_errors()
+        if not failures:
+            return "Required runtime components are not ready."
+        return "; ".join(f"{name}: {error}" for name, error in failures.items())
+
+    @property
+    def degraded_summary(self) -> str | None:
+        """Summarize optional-component degradation when present."""
+        failures = self.optional_component_errors()
+        if not failures:
+            return None
+        return "; ".join(f"{name}: {error}" for name, error in failures.items())
+
     def get_status_payload(self) -> dict[str, Any]:
         """Return a structured health/readiness payload."""
         payload = {
             "status": self.runtime_status,
             "ready": self.ready,
             "degraded": self.degraded,
+            "readiness_summary": self.readiness_summary,
+            "degraded_summary": self.degraded_summary,
             "backend": self.backend_name,
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            "required_component_errors": self.required_component_errors(),
+            "optional_component_errors": self.optional_component_errors(),
             "components": {
                 name: {
                     "required": status.required,
@@ -300,12 +341,12 @@ class ServerRuntime:
                 ),
             )
             _ = Substance
-            self._set_component("chunker", required=True, ready=True)
+            self._set_component("chunker", required=False, ready=True)
         except Exception as exc:
             self.chunker = None
             self._set_component(
                 "chunker",
-                required=True,
+                required=False,
                 ready=False,
                 error=f"Chunker initialization failed: {exc}",
             )
@@ -345,7 +386,6 @@ class ServerRuntime:
         return (
             self.vector_backend_available()
             and self._component_ready("embedding")
-            and self._component_ready("chunker")
         )
 
     def _validate_llm_provider(self) -> None:

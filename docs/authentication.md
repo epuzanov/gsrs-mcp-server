@@ -2,7 +2,7 @@
 
 ## MCP HTTP Transport
 
-When `MCP_USERNAME` and `MCP_PASSWORD` are set, the server enables bearer-token verification for the `/mcp` endpoint.
+When `MCP_PASSWORD` is set, the server enables bearer-token verification for the `/mcp` endpoint.
 
 Use:
 
@@ -32,5 +32,6 @@ No HTTP auth is used for `stdio` because the client launches the server locally.
 ## Recommendations
 
 - Change `MCP_PASSWORD` immediately outside local development
+- `MCP_USERNAME` is currently deployment metadata only; the HTTP bearer flow checks the token value, not a username
 - Prefer `stdio` for single-user local clients
 - Prefer a reverse proxy and HTTPS for shared HTTP deployments

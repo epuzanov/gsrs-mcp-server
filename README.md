@@ -33,7 +33,7 @@ Runtime flow:
 
 1. Startup builds a shared runtime with the configured vector backend, embedding client, optional LLM client, GSRS upstream client, and GSRS chunker.
 2. `/livez` reports process liveness only.
-3. `/readyz` reports whether the runtime is ready for core retrieval and ingest capabilities.
+3. `/readyz` reports whether the runtime is ready for the core retrieval path.
 4. `gsrs_ask` uses query rewrite, metadata filter inference, identifier-first routing, hybrid retrieval, reranking, evidence extraction, abstention, and optional answer generation.
 5. If answer generation is unavailable, `gsrs_ask` degrades to retrieval-grounded fallback output instead of failing.
 6. Tool availability is capability-specific: similarity search only requires the vector backend, while `gsrs_api_*` tools depend on GSRS upstream readiness.
@@ -46,8 +46,11 @@ Runtime flow:
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+pip install -e . --no-deps
 copy .env.example .env
 ```
+
+The editable install registers the `gsrs-mcp-server` CLI from `pyproject.toml`.
 
 ### 2. Configure `.env`
 
@@ -97,11 +100,12 @@ An empty but connected database is still considered ready.
 
 ## Authentication
 
-When `MCP_USERNAME` and `MCP_PASSWORD` are set, the MCP endpoint uses bearer token verification based on `MCP_PASSWORD`.
+When `MCP_PASSWORD` is set, the MCP endpoint uses HTTP Bearer token verification based on `MCP_PASSWORD`.
 
 - MCP HTTP auth: `Authorization: Bearer <MCP_PASSWORD>`
 - Health endpoints: no auth
 - Default credentials are for local development only
+- `MCP_USERNAME` is kept for deployment consistency, but the current HTTP auth flow only checks the bearer token value
 
 For stdio transport, auth is not used because the process is local.
 
@@ -176,13 +180,13 @@ Readiness depends on:
 
 - vector backend initialization
 - embedding provider configuration, and optional active probing if `STARTUP_VALIDATE_EXTERNAL=true`
-- chunker initialization
 - query pipeline construction
 
 Optional components:
 
 - answer generation provider
 - GSRS upstream API tools
+- chunker initialization for ingest
 
 If optional components are unavailable, the server stays up and reports a degraded state.
 
@@ -190,6 +194,7 @@ Tool degradation is explicit:
 
 - `gsrs_ask` falls back to retrieval-grounded output when answer generation is unavailable
 - `gsrs_similarity_search` still works when the vector backend is healthy, even if embeddings are unavailable
+- `/readyz` can stay healthy while `gsrs_ingest` is degraded because chunker startup affects ingest, not retrieval readiness
 - `gsrs_ingest` reports chunker or embedding failures specifically instead of returning a generic retrieval error
 - `gsrs_api_*` tools fail fast with a GSRS-upstream-specific message when the upstream dependency is unavailable
 

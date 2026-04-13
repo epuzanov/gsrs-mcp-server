@@ -9,6 +9,7 @@ Process liveness only.
 ### `GET /readyz`
 
 Runtime readiness. Returns HTTP `200` when retrieval dependencies are ready, otherwise `503`.
+Ingest-specific chunker failures are reported as degraded component state in `/health`, not as retrieval readiness failures.
 
 ### `GET /health`
 

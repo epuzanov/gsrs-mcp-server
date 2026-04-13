@@ -13,6 +13,7 @@
 - Switched GSRS upstream structure and sequence search to the current documentation example flow using `/ginas/app/api/v1/...Search?q=...` plus status/result polling.
 - Added a Podman `kube play` manifest for local containerized deployment and aligned the compose file with the current `MCP_*` setting names.
 - Expanded the integration guides and examples for ChatGPT, Open WebUI, Ollama, and OpenAI API remote-MCP usage.
+- Clarified the MCP HTTP auth contract around `MCP_PASSWORD`, added startup/readiness summaries, and made chunker failures degrade ingest without failing retrieval readiness.
 - Expanded tests toward runtime startup/failure semantics, auth enforcement, degraded behavior, identifier routing, grounded golden-set coverage, and MCP transport smoke coverage.
 
 ### Added

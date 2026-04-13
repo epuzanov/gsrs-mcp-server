@@ -47,6 +47,7 @@ If `LLM_API_KEY` is empty, `gsrs_ask` stays available in retrieval-only mode.
 - `MCP_PASSWORD`
 
 For the HTTP MCP endpoint, bearer token verification uses `MCP_PASSWORD` as the token value.
+`MCP_USERNAME` is kept for deployment consistency, but it is not part of the current bearer-token check.
 
 ### GSRS upstream tools
 
@@ -105,10 +106,10 @@ The server is ready when:
 
 - the vector backend is initialized
 - the embedding provider is configured correctly
-- the GSRS chunker loads
 - the query pipeline builds successfully
 
 The server may still be available but degraded when:
 
 - answer generation is disabled or unavailable
 - GSRS upstream tools cannot reach the GSRS API
+- the GSRS chunker cannot initialize, which affects ingest but not retrieval readiness

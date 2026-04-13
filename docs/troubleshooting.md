@@ -7,7 +7,6 @@ Check `/health` for the failing component. Common causes:
 - `EMBEDDING_API_KEY` missing
 - `EMBEDDING_DIMENSION` does not match the configured backend collection
 - database connection string is wrong
-- chunker dependencies are not installed correctly
 
 ## Empty database looks unhealthy
 
@@ -40,6 +39,11 @@ The message should point to the specific failed dependency. Common causes:
 - embedding provider configuration is missing or invalid
 - the vector backend failed startup
 - chunker dependencies failed to initialize
+
+## `/readyz` is healthy but ingest is degraded
+
+That is expected when retrieval dependencies are ready but the optional ingest chunker failed startup.
+Check `/health` for the `chunker` component and verify the GSRS model/chunker dependencies are installed correctly.
 
 ## `gsrs_api_*` tools fail while `/readyz` is healthy
 

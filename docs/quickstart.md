@@ -6,8 +6,11 @@
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+pip install -e . --no-deps
 copy .env.example .env
 ```
+
+The editable install registers the `gsrs-mcp-server` CLI entrypoint from `pyproject.toml`.
 
 ## 2. Configure
 
@@ -59,6 +62,7 @@ Interpretation:
 - `/readyz` should return HTTP `200` when retrieval dependencies are ready
 - `/health` should include a `status` field of `ready`, `ready_degraded`, or `not_ready`
 - an empty but connected vector database is still ready
+- chunker failures may degrade `gsrs_ingest` while `/readyz` stays healthy for retrieval
 
 ## 5. Load Data
 
