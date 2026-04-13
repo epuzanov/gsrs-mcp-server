@@ -2,6 +2,7 @@
 GSRS MCP Server - Answer Generator
 Generates answers from evidence with citations.
 """
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.api import Citation
@@ -41,6 +42,32 @@ _STYLE_MAP = {
 }
 
 
+@dataclass
+class GenerationTrace:
+    """Internal trace describing how an answer was produced."""
+
+    mode: str
+    llm_attempted: bool
+    used_llm: bool
+    fallback_used: bool
+    evidence_count: int
+    citation_count: int
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "llm_attempted": self.llm_attempted,
+            "used_llm": self.used_llm,
+            "fallback_used": self.fallback_used,
+            "evidence_count": self.evidence_count,
+            "citation_count": self.citation_count,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+        }
+
+
 class AnswerGenerator:
     """
     Generates answers from evidence with proper citations.
@@ -56,6 +83,7 @@ class AnswerGenerator:
     ):
         self.llm = llm_service
         self.use_llm = use_llm and llm_service is not None
+        self.last_trace: Optional[GenerationTrace] = None
 
     def generate(
         self,
@@ -75,12 +103,29 @@ class AnswerGenerator:
             (answer_text, citations) tuple
         """
         if not evidence:
+            self.last_trace = GenerationTrace(
+                mode="no_evidence",
+                llm_attempted=False,
+                used_llm=False,
+                fallback_used=True,
+                evidence_count=0,
+                citation_count=0,
+            )
             return "I cannot answer this question based on the available GSRS evidence.", []
 
         if self.use_llm and self.llm:
             return self._generate_llm_answer(query, evidence, answer_style)
-        else:
-            return self._generate_template_answer(query, evidence, answer_style)
+
+        answer, citations = self._generate_template_answer(query, evidence, answer_style)
+        self.last_trace = GenerationTrace(
+            mode="template",
+            llm_attempted=False,
+            used_llm=False,
+            fallback_used=True,
+            evidence_count=len(evidence),
+            citation_count=len(citations),
+        )
+        return answer, citations
 
     def _generate_llm_answer(
         self,
@@ -110,10 +155,29 @@ Answer the question using only the evidence above. Cite each claim with [1], [2]
                 temperature=0.2,
             )
             citations = [e.citation for e in evidence if e.score > 0.3]
+            self.last_trace = GenerationTrace(
+                mode="llm",
+                llm_attempted=True,
+                used_llm=True,
+                fallback_used=False,
+                evidence_count=len(evidence),
+                citation_count=len(citations),
+            )
             return answer, citations
-        except Exception:
+        except Exception as exc:
             # Fallback to template
-            return self._generate_template_answer(query, evidence, answer_style)
+            answer, citations = self._generate_template_answer(query, evidence, answer_style)
+            self.last_trace = GenerationTrace(
+                mode="template_fallback",
+                llm_attempted=True,
+                used_llm=False,
+                fallback_used=True,
+                evidence_count=len(evidence),
+                citation_count=len(citations),
+                error_type=exc.__class__.__name__,
+                error_message=str(exc),
+            )
+            return answer, citations
 
     def _generate_template_answer(
         self,

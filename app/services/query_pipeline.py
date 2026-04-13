@@ -2,6 +2,7 @@
 GSRS MCP Server - Query Pipeline Service
 Orchestrates the full query -> answer pipeline.
 """
+import time
 from typing import Any, Dict, List, Optional
 
 from app.models.api import (
@@ -85,26 +86,63 @@ class QueryPipelineService:
         self.answer_generator.use_llm = enabled and llm_service is not None
 
     def ask(self, request: AskRequest) -> AskResponse:
+        """Execute the full query pipeline and return the public response only."""
+        response, _ = self.ask_with_diagnostics(request)
+        return response
+
+    def ask_with_diagnostics(self, request: AskRequest) -> tuple[AskResponse, Dict[str, Any]]:
         """Execute the full query pipeline."""
+        diagnostics: Dict[str, Any] = {
+            "stages": [],
+        }
+
+        def record_stage(stage_name: str, *, outcome: str = "success", started_at: float | None = None, **fields: Any) -> None:
+            stage_payload = {
+                "stage": stage_name,
+                "outcome": outcome,
+                **fields,
+            }
+            if started_at is not None:
+                stage_payload["latency_ms"] = round((time.perf_counter() - started_at) * 1000, 2)
+            diagnostics["stages"].append(stage_payload)
+
         # 1. Rewrite query
+        rewrite_started = time.perf_counter()
         rewrite_result = self.rewrite_service.rewrite(request.query)
         queries = [request.query] + rewrite_result.rewrites
+        diagnostics["canonical_query"] = rewrite_result.canonical_query
+        diagnostics["intent"] = rewrite_result.intent
+        record_stage(
+            "rewrite",
+            started_at=rewrite_started,
+            canonical_query=rewrite_result.canonical_query,
+            intent=rewrite_result.intent,
+            rewrite_count=len(rewrite_result.rewrites),
+        )
         debug_info: Dict[str, Any] = {
             "canonical_query": rewrite_result.canonical_query,
             "intent": rewrite_result.intent,
         } if request.debug else {}
 
         # 2. Build metadata filters
+        filter_started = time.perf_counter()
         applied_filters = self.filter_builder.build(
             request_filters=request.filters,
             substance_classes=request.substance_classes,
             sections=request.sections,
             inferred_filters=rewrite_result.filters,
         )
+        diagnostics["applied_filters"] = applied_filters
+        record_stage(
+            "filters",
+            started_at=filter_started,
+            filter_keys=sorted(applied_filters.keys()),
+        )
         if request.debug:
             debug_info["applied_filters"] = applied_filters
 
         # 3. Prefer deterministic identifier or exact-name routing when possible.
+        retrieval_started = time.perf_counter()
         route_result = self.identifier_router.route(request.query, top_k=request.top_k)
         routing_mode = "hybrid"
         if route_result is not None:
@@ -122,15 +160,34 @@ class QueryPipelineService:
                 queries=queries,
                 filters=applied_filters,
             )
+        diagnostics["retrieval_mode"] = routing_mode
+        diagnostics["candidate_count"] = len(candidates)
+        record_stage(
+            "retrieval",
+            started_at=retrieval_started,
+            retrieval_mode=routing_mode,
+            candidate_count=len(candidates),
+            top_chunks=self._chunk_refs(candidates[:5]),
+        )
         if request.debug:
             debug_info["retrieval_mode"] = routing_mode
+            debug_info["retrieved_chunks"] = self._chunk_refs(candidates[:10])
 
         # 4. Rerank
+        rerank_started = time.perf_counter()
         reranked = self.reranker.rerank(
             candidates=candidates,
             query=request.query,
             rewritten_queries=rewrite_result.rewrites,
             filters=applied_filters,
+        )
+        diagnostics["reranked_count"] = len(reranked)
+        diagnostics["top_reranked_chunks"] = self._chunk_refs(reranked[:5])
+        record_stage(
+            "reranking",
+            started_at=rerank_started,
+            reranked_count=len(reranked),
+            top_chunks=self._chunk_refs(reranked[:5]),
         )
         if request.debug:
             debug_info["reranked_chunks"] = [
@@ -144,10 +201,19 @@ class QueryPipelineService:
             ]
 
         # 5. Extract evidence
+        evidence_started = time.perf_counter()
         evidence = self.evidence_extractor.extract(
             candidates=reranked,
             query=request.query,
             intent=rewrite_result.intent,
+        )
+        diagnostics["evidence_count"] = len(evidence)
+        diagnostics["citation_count"] = len([item for item in evidence if item.score > 0.3][:5])
+        record_stage(
+            "evidence",
+            started_at=evidence_started,
+            evidence_count=len(evidence),
+            top_chunks=self._evidence_refs(evidence[:5]),
         )
         if request.debug:
             debug_info["evidence"] = [
@@ -160,11 +226,22 @@ class QueryPipelineService:
             ]
 
         # 6. Evaluate abstention
+        abstention_started = time.perf_counter()
         abstention = self.abstention_policy.evaluate(
             evidence=evidence,
             query=request.query,
             intent=rewrite_result.intent,
             applied_filters=applied_filters,
+        )
+        diagnostics["confidence"] = abstention.confidence
+        diagnostics["abstained"] = abstention.abstained
+        diagnostics["abstain_reason"] = abstention.abstain_reason
+        record_stage(
+            "abstention",
+            started_at=abstention_started,
+            outcome="abstained" if abstention.abstained else "success",
+            confidence=round(abstention.confidence, 4),
+            abstain_reason=abstention.abstain_reason,
         )
 
         # 6.5 For aggregation queries, also extract structured data
@@ -178,7 +255,7 @@ class QueryPipelineService:
 
         # 7. Generate answer or abstain
         if abstention.abstained:
-            return self._build_abstain_response(
+            response = self._build_abstain_response(
                 request=request,
                 rewrite_result=rewrite_result,
                 applied_filters=applied_filters,
@@ -188,7 +265,7 @@ class QueryPipelineService:
                 debug_info=debug_info if request.debug else None,
             )
         else:
-            return self._build_answer_response(
+            response = self._build_answer_response(
                 request=request,
                 rewrite_result=rewrite_result,
                 applied_filters=applied_filters,
@@ -197,6 +274,34 @@ class QueryPipelineService:
                 aggregation_result=aggregation_result,
                 debug_info=debug_info if request.debug else None,
             )
+        answer_trace = self.answer_generator.last_trace.to_dict() if self.answer_generator.last_trace else None
+        if response.abstained:
+            answer_trace = {
+                "mode": "abstained",
+                "llm_attempted": False,
+                "used_llm": False,
+                "fallback_used": False,
+                "evidence_count": len(evidence),
+                "citation_count": len(response.citations),
+                "error_type": None,
+                "error_message": None,
+            }
+        diagnostics["answer_generation"] = answer_trace
+        record_stage(
+            "answer_generation",
+            outcome="abstained" if response.abstained else ("degraded" if response.degraded else "success"),
+            mode=answer_trace["mode"] if answer_trace else "unknown",
+            used_llm=answer_trace["used_llm"] if answer_trace else False,
+            fallback_used=answer_trace["fallback_used"] if answer_trace else False,
+            error_type=answer_trace["error_type"] if answer_trace else None,
+        )
+        diagnostics["degraded"] = response.degraded
+        diagnostics["degraded_reason"] = response.degraded_reason
+        if request.debug:
+            debug_info["answer_generation"] = answer_trace
+            debug_info["stage_trace"] = diagnostics["stages"]
+            response.debug = debug_info
+        return response, diagnostics
 
     def _build_abstain_response(
         self,
@@ -275,6 +380,13 @@ class QueryPipelineService:
         if request.return_evidence:
             evidence_chunks = self._evidence_to_query_results(evidence)
 
+        generation_trace = self.answer_generator.last_trace
+        degraded = not self.answer_generator.use_llm
+        degraded_reason = None if self.answer_generator.use_llm else "Answer generation provider unavailable; returned retrieval-grounded fallback answer."
+        if generation_trace and generation_trace.mode == "template_fallback":
+            degraded = True
+            degraded_reason = "Answer generation failed at runtime; returned retrieval-grounded template fallback answer."
+
         return AskResponse(
             query=request.query,
             rewritten_queries=[request.query] + rewrite_result.rewrites,
@@ -285,8 +397,8 @@ class QueryPipelineService:
             confidence=abstention.confidence,
             abstained=False,
             abstain_reason=None,
-            degraded=not self.answer_generator.use_llm,
-            degraded_reason=None if self.answer_generator.use_llm else "Answer generation provider unavailable; returned retrieval-grounded fallback answer.",
+            degraded=degraded,
+            degraded_reason=degraded_reason,
             debug=debug_info,
         )
 
@@ -298,3 +410,29 @@ class QueryPipelineService:
             qr = QueryResult(chunk=e.document, score=e.score)
             results.append(qr)
         return results
+
+    def _chunk_refs(self, candidates: List[tuple]) -> List[Dict[str, Any]]:
+        refs: List[Dict[str, Any]] = []
+        for doc, score in candidates:
+            refs.append(
+                {
+                    "chunk_id": doc.chunk_id,
+                    "document_id": str(doc.document_id),
+                    "section": doc.section,
+                    "score": round(score, 4),
+                }
+            )
+        return refs
+
+    def _evidence_refs(self, evidence: List[EvidenceResult]) -> List[Dict[str, Any]]:
+        refs: List[Dict[str, Any]] = []
+        for item in evidence:
+            refs.append(
+                {
+                    "chunk_id": item.document.chunk_id,
+                    "document_id": str(item.document.document_id),
+                    "section": item.citation.section,
+                    "score": round(item.score, 4),
+                }
+            )
+        return refs

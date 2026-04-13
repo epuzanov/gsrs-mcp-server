@@ -486,6 +486,11 @@ class _FailingEmbeddingService:
         raise AssertionError("Embedding should not be called for identifier-first routing")
 
 
+class _FailingLLMService:
+    def complete_text(self, system_prompt, user_prompt, temperature=0.3):
+        raise RuntimeError("LLM backend timed out")
+
+
 class _StaticVectorDb:
     def __init__(self, results):
         self._results = results
@@ -564,6 +569,34 @@ class TestIdentifierFirstQueryPipeline(unittest.TestCase):
         self.assertTrue(response.abstained)
         self.assertIn("No relevant evidence", response.abstain_reason)
         self.assertEqual(response.debug["deterministic_route"]["result_count"], 0)
+
+    def test_debug_trace_surfaces_generation_fallback_details(self):
+        doc, score = self._make_result(
+            "UUID 0103a288-6eb6-4ced-b13a-849cd7edf028 belongs to Aspirin.",
+            {"uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028", "canonical_name": "Aspirin"},
+        )
+        vector_db = _StaticVectorDb([type("Result", (), {"document": doc, "score": score})()])
+        pipeline = QueryPipelineService(
+            vector_db=vector_db,
+            embedding_service=_FailingEmbeddingService(),
+            llm_service=_FailingLLMService(),
+            use_llm=True,
+            min_confidence=0.2,
+        )
+
+        response = pipeline.ask(
+            AskRequest(
+                query="0103a288-6eb6-4ced-b13a-849cd7edf028",
+                return_evidence=True,
+                debug=True,
+            )
+        )
+
+        self.assertFalse(response.abstained)
+        self.assertTrue(response.degraded)
+        self.assertEqual(response.debug["answer_generation"]["mode"], "template_fallback")
+        self.assertEqual(response.debug["answer_generation"]["error_type"], "RuntimeError")
+        self.assertTrue(any(stage["stage"] == "answer_generation" for stage in response.debug["stage_trace"]))
 
 
 if __name__ == "__main__":

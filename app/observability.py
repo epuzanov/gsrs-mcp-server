@@ -36,6 +36,36 @@ _STANDARD_LOG_FIELDS = {
     "threadName",
 }
 
+_SENSITIVE_FIELD_MARKERS = (
+    "api_key",
+    "authorization",
+    "bearer",
+    "password",
+    "secret",
+    "token",
+)
+
+
+def _sanitize_for_logging(value: Any, field_name: str | None = None) -> Any:
+    """Recursively redact sensitive-looking values before serializing logs."""
+    normalized_name = (field_name or "").lower()
+    if any(marker in normalized_name for marker in _SENSITIVE_FIELD_MARKERS):
+        return "[REDACTED]"
+
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_for_logging(item, key)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [_sanitize_for_logging(item, field_name) for item in value]
+
+    if isinstance(value, tuple):
+        return tuple(_sanitize_for_logging(item, field_name) for item in value)
+
+    return value
+
 
 class JsonLogFormatter(logging.Formatter):
     """Render log records as single-line JSON objects."""
@@ -56,7 +86,7 @@ class JsonLogFormatter(logging.Formatter):
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
 
-        return json.dumps(payload, default=str)
+        return json.dumps(_sanitize_for_logging(payload), default=str)
 
 
 def configure_logging(debug: bool = False) -> None:
@@ -159,6 +189,19 @@ class ToolTelemetry:
         self.metrics.observe_latency(f"tool_latency.{self.tool_name}", latency_ms)
         self.metrics.increment(f"tool_outcomes.{self.tool_name}.{outcome}")
 
+    def stage(self, stage_name: str, outcome: str = "success", **fields: Any) -> None:
+        """Emit a structured intermediate stage event for long-running tools."""
+        payload = {
+            "request_id": self.request_id,
+            "tool_name": self.tool_name,
+            "backend": self.backend,
+            "stage": stage_name,
+            "outcome": outcome,
+            **fields,
+        }
+        self.logger.info("tool_stage", extra=payload)
+        self.metrics.increment(f"tool_stage.{self.tool_name}.{stage_name}.{outcome}")
+
     def fail(self, error: Exception, **fields: Any) -> None:
         payload = {
             "error_type": error.__class__.__name__,
@@ -166,4 +209,3 @@ class ToolTelemetry:
             **fields,
         }
         self.finish("error", **payload)
-

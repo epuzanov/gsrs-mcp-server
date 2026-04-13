@@ -321,6 +321,16 @@ def _format_ask_response(response) -> str:
     return "\n\n".join(sections)
 
 
+def _emit_pipeline_stages(tool: ToolTelemetry, diagnostics: Dict[str, Any]) -> None:
+    """Emit structured stage logs for ask/retrieval style tools."""
+    for stage in diagnostics.get("stages", []):
+        tool.stage(
+            stage_name=stage.get("stage", "unknown"),
+            outcome=stage.get("outcome", "success"),
+            **{key: value for key, value in stage.items() if key not in {"stage", "outcome"}},
+        )
+
+
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
@@ -396,11 +406,19 @@ async def gsrs_ask(
             min_confidence=min_confidence,
             debug=debug or settings.debug_mode,
         )
-        response = runtime.query_pipeline.ask(request)
+        response, diagnostics = runtime.query_pipeline.ask_with_diagnostics(request)
+        _emit_pipeline_stages(tool, diagnostics)
+        if response.debug is not None:
+            response.debug["request_id"] = tool.request_id
         tool.finish(
             "success" if not response.abstained else "abstained",
             result_count=len(response.evidence_chunks),
             citation_count=len(response.citations),
+            retrieval_mode=diagnostics.get("retrieval_mode"),
+            confidence=round(response.confidence, 4),
+            degraded=response.degraded,
+            answer_mode=(diagnostics.get("answer_generation") or {}).get("mode"),
+            answer_error_type=(diagnostics.get("answer_generation") or {}).get("error_type"),
         )
         return _format_ask_response(response)
     except Exception as exc:
@@ -516,7 +534,12 @@ async def gsrs_retrieve(
             results = runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=parsed_filters)
             retrieval_mode = "semantic"
 
-        tool.finish("success", result_count=len(results), citation_count=0)
+        tool.stage(
+            "retrieval",
+            retrieval_mode=retrieval_mode,
+            result_count=len(results),
+        )
+        tool.finish("success", result_count=len(results), citation_count=0, retrieval_mode=retrieval_mode)
         if not results:
             return f"No results for '{query}'."
 
@@ -525,7 +548,26 @@ async def gsrs_retrieve(
             text = result.document.text[:250] + ("..." if len(result.document.text) > 250 else "")
             lines.append(f"{i}. {text}\n   Score: {result.score:.2f}  Section: {result.document.section}")
         if debug or settings.debug_mode:
-            lines.append(f"\nDebug: {json.dumps({'retrieval_mode': retrieval_mode, 'filters': parsed_filters}, indent=2)}")
+            lines.append(
+                "\nDebug: "
+                + json.dumps(
+                    {
+                        "request_id": tool.request_id,
+                        "retrieval_mode": retrieval_mode,
+                        "filters": parsed_filters,
+                        "results": [
+                            {
+                                "chunk_id": result.document.chunk_id,
+                                "document_id": str(result.document.document_id),
+                                "section": result.document.section,
+                                "score": round(result.score, 4),
+                            }
+                            for result in results[:10]
+                        ],
+                    },
+                    indent=2,
+                )
+            )
         return "\n".join(lines)
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)

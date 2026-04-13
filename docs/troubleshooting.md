@@ -59,3 +59,11 @@ Set `DEBUG_MODE=true` or pass `debug=true` to:
 
 - `gsrs_ask`
 - `gsrs_retrieve`
+
+In `gsrs_ask`, debug output now includes:
+
+- normalized query and intent
+- deterministic routing decisions
+- retrieved and reranked chunk IDs with scores
+- stage trace for retrieval, evidence, abstention, and answer generation
+- whether answer generation used the LLM, degraded to a template fallback, or abstained

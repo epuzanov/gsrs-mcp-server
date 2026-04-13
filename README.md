@@ -199,15 +199,25 @@ Structured JSON logs include fields such as:
 - `result_count`
 - `citation_count`
 
+For `gsrs_ask`, logs now also emit stage-level events for:
+
+- rewrite and normalization
+- retrieval routing and candidate counts
+- reranking
+- evidence extraction
+- abstention
+- answer generation or template fallback
+
 Set `DEBUG_MODE=true` to include extra runtime detail. You can also pass `debug=true` to `gsrs_ask` or `gsrs_retrieve` for internal diagnostics such as:
 
 - query normalization
 - deterministic identifier routing
+- retrieved chunk IDs and scores
 - reranked chunk IDs and scores
 - applied filters
 - degraded answer-generation state
 
-Sensitive values such as API keys are not logged.
+Sensitive values such as API keys, passwords, bearer tokens, and authorization headers are redacted from structured logs.
 
 ## Docker
 
