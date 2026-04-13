@@ -1,17 +1,19 @@
-"""
-GSRS MCP Server - Data Loader Script Tests
+"""Tests for the load_data.py script functionality."""
 
-Tests for the load_data.py script functionality.
-"""
+from __future__ import annotations
+
+import asyncio
 import gzip
 import json
 import os
 import re
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch
 
 from scripts.load_data import (
+    MCPConnectionSettings,
+    MCPToolClient,
     fetch_all_substance_uuids,
     fetch_substance_by_uuid,
     ingest_batch_via_mcp,
@@ -92,27 +94,30 @@ class TestParseGsrsFile(unittest.TestCase):
 
 
 class TestIngestBatchViaMCP(unittest.TestCase):
-    """Tests for MCP SDK-based batch ingestion."""
+    """Tests for MCP client-based batch ingestion."""
 
     MCP_URL = "http://localhost:8000/mcp"
 
     def test_ingest_batch_via_mcp_success(self):
-        """Test ingestion via MCP SDK with successful result."""
-        async def fake_ingest_substance_batch(mcp_url, verify_ssl, substances, bearer_token=None):
-            total = 0
-            for sub in substances:
-                total += 3
-            return {
-                "total_substances": len(substances),
-                "total_chunks": total,
-                "successful": len(substances),
-                "failed": 0,
-                "errors": [],
-            }
+        """Test ingestion via a single MCP client session with successful results."""
 
-        with patch("scripts.load_data.ingest_substance_batch", fake_ingest_substance_batch):
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def ensure_ingest_available(self):
+                return None
+
+            async def ingest_substance(self, substance):
+                return f"Ingested **{substance['uuid']}** - 3 chunks."
+
+        with patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):
             result = ingest_batch_via_mcp(
-                self.MCP_URL, True,
+                self.MCP_URL,
+                True,
                 [{"uuid": "test-1"}, {"uuid": "test-2"}],
             )
 
@@ -122,19 +127,25 @@ class TestIngestBatchViaMCP(unittest.TestCase):
         self.assertEqual(len(result["errors"]), 0)
 
     def test_ingest_batch_via_mcp_error(self):
-        """Test ingestion via MCP SDK that returns an error."""
-        async def fake_ingest_substance_batch(mcp_url, verify_ssl, substances, bearer_token=None):
-            return {
-                "total_substances": len(substances),
-                "total_chunks": 0,
-                "successful": 0,
-                "failed": len(substances),
-                "errors": [f"Substance {i}: No chunks" for i in range(len(substances))],
-            }
+        """Test ingestion via MCP that returns an unparseable result."""
 
-        with patch("scripts.load_data.ingest_substance_batch", fake_ingest_substance_batch):
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def ensure_ingest_available(self):
+                return None
+
+            async def ingest_substance(self, substance):
+                return "No chunks generated from substance."
+
+        with patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):
             result = ingest_batch_via_mcp(
-                self.MCP_URL, True,
+                self.MCP_URL,
+                True,
                 [{"uuid": "bad"}],
             )
 
@@ -143,19 +154,25 @@ class TestIngestBatchViaMCP(unittest.TestCase):
         self.assertEqual(result["total_chunks"], 0)
 
     def test_ingest_batch_via_mcp_exception(self):
-        """Test ingestion via MCP SDK that raises an exception."""
-        async def fake_ingest_substance_batch(mcp_url, verify_ssl, substances, bearer_token=None):
-            return {
-                "total_substances": len(substances),
-                "total_chunks": 0,
-                "successful": 0,
-                "failed": len(substances),
-                "errors": ["Substance 0: MCP server error"],
-            }
+        """Test ingestion via MCP when a client call raises."""
 
-        with patch("scripts.load_data.ingest_substance_batch", fake_ingest_substance_batch):
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def ensure_ingest_available(self):
+                return None
+
+            async def ingest_substance(self, substance):
+                raise RuntimeError("MCP server error")
+
+        with patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):
             result = ingest_batch_via_mcp(
-                self.MCP_URL, True,
+                self.MCP_URL,
+                True,
                 [{"uuid": "bad"}],
             )
 
@@ -163,21 +180,27 @@ class TestIngestBatchViaMCP(unittest.TestCase):
         self.assertEqual(result["failed"], 1)
 
     def test_load_from_file_with_mcp(self):
-        """Test file loading via MCP SDK tools."""
-        async def fake_mcp_health(mcp_url, verify_ssl, bearer_token=None):
-            return {"total_chunks": 0, "total_substances": 0}
+        """Test file loading reuses one MCP client."""
+        seen = {"ingest_calls": []}
 
-        async def fake_ingest_substance_batch(mcp_url, verify_ssl, substances, bearer_token=None):
-            return {
-                "total_substances": len(substances),
-                "total_chunks": len(substances) * 2,
-                "successful": len(substances),
-                "failed": 0,
-                "errors": [],
-            }
+        class FakeClient:
+            async def __aenter__(self):
+                return self
 
-        with patch("scripts.load_data.mcp_health", fake_mcp_health), \
-             patch("scripts.load_data.ingest_substance_batch", fake_ingest_substance_batch):
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def ensure_ingest_available(self):
+                return None
+
+            async def get_statistics(self):
+                return {"total_chunks": 0, "total_substances": 0}
+
+            async def ingest_substance(self, substance):
+                seen["ingest_calls"].append(substance["uuid"])
+                return f"Ingested **{substance['uuid']}** - 2 chunks."
+
+        with patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):
             with tempfile.NamedTemporaryFile(suffix=".gsrs", delete=False) as f:
                 temp_path = f.name
                 with gzip.open(f, "wt", encoding="utf-8") as gz:
@@ -195,6 +218,23 @@ class TestIngestBatchViaMCP(unittest.TestCase):
         self.assertEqual(result["successful"], 2)
         self.assertEqual(result["total_chunks"], 4)
         self.assertEqual(result["failed"], 0)
+        self.assertEqual(seen["ingest_calls"], ["uuid-1", "uuid-2"])
+
+
+class TestMCPToolClient(unittest.IsolatedAsyncioTestCase):
+    async def test_ensure_ingest_available_raises_component_error(self):
+        client = MCPToolClient(MCPConnectionSettings())
+        client._tool_names = {"gsrs_ingest", "gsrs_health"}
+        client.get_health_payload = lambda: asyncio.sleep(0, result={
+            "components": {
+                "vector_db": {"ready": True},
+                "embedding": {"ready": False, "error": "Embedding provider is down"},
+                "chunker": {"ready": True},
+            }
+        })
+
+        with self.assertRaisesRegex(RuntimeError, "Embedding provider is down"):
+            await client.ensure_ingest_available()
 
 
 class TestFetchSubstanceByUuid(unittest.IsolatedAsyncioTestCase):
@@ -331,7 +371,7 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
             self.assertRegex(uuid, uuid_pattern)
 
     async def test_load_substances_from_api_uses_mcp(self):
-        """Test API loading uses MCP SDK for ingestion."""
+        """Test API loading uses one MCP client for ingestion."""
         seen = {"async_verify": [], "mcp_calls": []}
 
         class FakeAsyncResponse:
@@ -356,24 +396,25 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
                 substance_uuid = url.split("(")[-1].split(")")[0]
                 return FakeAsyncResponse({"uuid": substance_uuid})
 
-        async def fake_mcp_health(mcp_url, verify_ssl, bearer_token=None):
-            return {"total_chunks": 0, "total_substances": 0}
+        class FakeClient:
+            async def __aenter__(self):
+                return self
 
-        async def fake_ingest_substance_batch(mcp_url, verify_ssl, substances, bearer_token=None):
-            for sub in substances:
-                seen["mcp_calls"].append(sub.get("uuid"))
-            return {
-                "total_substances": len(substances),
-                "total_chunks": len(substances),
-                "successful": len(substances),
-                "failed": 0,
-                "errors": [],
-            }
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
 
-        # Patch at module level where ingest_batch_via_mcp calls ingest_substance
+            async def ensure_ingest_available(self):
+                return None
+
+            async def get_statistics(self):
+                return {"total_chunks": 0, "total_substances": 0}
+
+            async def ingest_substance(self, substance):
+                seen["mcp_calls"].append(substance.get("uuid"))
+                return f"Ingested **{substance['uuid']}** - 1 chunks."
+
         with patch("scripts.load_data.httpx.AsyncClient", FakeAsyncClient), \
-             patch("scripts.load_data.mcp_health", fake_mcp_health), \
-             patch("scripts.load_data.ingest_substance_batch", fake_ingest_substance_batch):
+             patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):
             result = await load_substances_from_api(
                 mcp_url="http://localhost:8000/mcp",
                 uuids=["uuid-1", "uuid-2"],

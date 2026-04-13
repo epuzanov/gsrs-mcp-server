@@ -150,6 +150,13 @@ Use the bundled loader:
 python scripts/load_data.py --uuids 0103a288-6eb6-4ced-b13a-849cd7edf028
 ```
 
+The loader now uses the MCP client library directly and can talk to the server
+over streamable HTTP or `stdio`.
+
+```bash
+python scripts/load_data.py --transport stdio --command gsrs-mcp-server --uuids 0103a288-6eb6-4ced-b13a-849cd7edf028
+```
+
 Or ingest through MCP with `gsrs_ingest`.
 
 ## Health and Readiness Semantics

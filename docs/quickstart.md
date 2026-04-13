@@ -66,6 +66,12 @@ Interpretation:
 python scripts/load_data.py --uuids 0103a288-6eb6-4ced-b13a-849cd7edf028
 ```
 
+For local tooling, the loader can also use stdio:
+
+```bash
+python scripts/load_data.py --transport stdio --command gsrs-mcp-server --uuids 0103a288-6eb6-4ced-b13a-849cd7edf028
+```
+
 ## 6. Connect an MCP Client
 
 Streamable HTTP:
