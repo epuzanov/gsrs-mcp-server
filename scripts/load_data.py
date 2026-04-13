@@ -230,6 +230,9 @@ class MCPToolClient:
         result = await session.call_tool(tool_name, arguments)
         structured = getattr(result, "structuredContent", None)
         if structured:
+            unwrapped = self._unwrap_structured_result(structured)
+            if unwrapped is not None:
+                return unwrapped
             return json.dumps(structured, indent=2)
         return "\n".join(self._result_blocks_to_text(result)).strip()
 
@@ -298,6 +301,17 @@ class MCPToolClient:
             return json.loads(payload)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"`{tool_name}` returned non-JSON content: {payload}") from exc
+
+    @staticmethod
+    def _unwrap_structured_result(structured: Any) -> str | None:
+        """Return the canonical tool result text from MCP structured content."""
+        if not isinstance(structured, dict) or "result" not in structured:
+            return None
+
+        value = structured["result"]
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, indent=2)
 
     @staticmethod
     def _result_blocks_to_text(result: Any) -> list[str]:
@@ -405,6 +419,16 @@ async def _log_statistics_if_available(client: MCPToolClient) -> None:
         statistics.get("total_chunks", 0),
         statistics.get("total_substances", 0),
     )
+
+
+def _should_run_ingest_preflight(client: MCPToolClient) -> bool:
+    """Decide whether to probe health/statistics before ingesting."""
+    connection = getattr(client, "connection", None)
+    if connection is None:
+        return True
+    # stdio clients have shown fragility when doing multiple preflight tool
+    # calls before ingestion; let the ingest tool report dependency failures.
+    return getattr(connection, "transport", None) != "stdio"
 
 
 def _empty_stats(include_downloaded: bool = False) -> dict[str, Any]:
@@ -545,7 +569,8 @@ async def ingest_substance_batch(
         verify_ssl=verify_ssl,
         bearer_token=bearer_token,
     ) as client:
-        await client.ensure_ingest_available()
+        if _should_run_ingest_preflight(client):
+            await client.ensure_ingest_available()
         return await _ingest_substance_batch(client, substances)
 
 
@@ -611,12 +636,22 @@ async def load_substances_from_api(
             verify_ssl=verify_ssl,
             bearer_token=bearer_token,
         ) as client:
-            await client.ensure_ingest_available()
-            await _log_statistics_if_available(client)
+            if _should_run_ingest_preflight(client):
+                await client.ensure_ingest_available()
+                await _log_statistics_if_available(client)
 
             for batch_start in range(0, len(substances), batch_size):
                 batch = substances[batch_start: batch_start + batch_size]
-                result = await _ingest_substance_batch(client, batch)
+                supports_uuid_ingest = getattr(client, "supports_uuid_ingest", lambda: False)
+                if supports_uuid_ingest():
+                    batch_uuids = [
+                        substance.get("uuid")
+                        for substance in batch
+                        if substance.get("uuid")
+                    ]
+                    result = await _ingest_uuid_batch(client, batch_uuids)
+                else:
+                    result = await _ingest_substance_batch(client, batch)
                 stats["successful"] += result["successful"]
                 stats["failed"] += result["failed"]
                 stats["total_chunks"] += result["total_chunks"]
@@ -656,8 +691,9 @@ async def _load_from_file_async(
                 verify_ssl=verify_ssl,
                 bearer_token=bearer_token,
             ).__aenter__()
-            await client.ensure_ingest_available()
-            await _log_statistics_if_available(client)
+            if _should_run_ingest_preflight(client):
+                await client.ensure_ingest_available()
+                await _log_statistics_if_available(client)
         except Exception as exc:
             logger.error("MCP server not available: %s", exc)
             stats["errors"].append(f"MCP server not available: {exc}")

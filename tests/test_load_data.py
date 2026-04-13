@@ -273,6 +273,49 @@ class TestIngestBatchViaMCP(unittest.TestCase):
 
 
 class TestMCPToolClient(unittest.IsolatedAsyncioTestCase):
+    async def test_call_tool_text_unwraps_structured_result(self):
+        client = MCPToolClient(MCPConnectionSettings())
+
+        class FakeResult:
+            structuredContent = {"result": "Ingested **abc** - 2 chunks."}
+            content = []
+
+        class FakeSession:
+            async def call_tool(self, tool_name, arguments):
+                return FakeResult()
+
+        client._session = FakeSession()
+        text = await client.call_tool_text("gsrs_ingest", {"substance_json": "{}"})
+
+        self.assertEqual(text, "Ingested **abc** - 2 chunks.")
+
+    async def test_get_health_payload_parses_structured_json_result(self):
+        client = MCPToolClient(MCPConnectionSettings())
+        client._tool_names = {"gsrs_health"}
+
+        class FakeResult:
+            structuredContent = {
+                "result": json.dumps(
+                    {
+                        "components": {
+                            "vector_db": {"ready": True},
+                            "embedding": {"ready": True},
+                            "chunker": {"ready": True},
+                        }
+                    }
+                )
+            }
+            content = []
+
+        class FakeSession:
+            async def call_tool(self, tool_name, arguments):
+                return FakeResult()
+
+        client._session = FakeSession()
+        payload = await client.get_health_payload()
+
+        self.assertTrue(payload["components"]["vector_db"]["ready"])
+
     async def test_ensure_ingest_available_raises_component_error(self):
         client = MCPToolClient(MCPConnectionSettings())
         client._tool_names = {"gsrs_ingest", "gsrs_health"}
@@ -516,6 +559,79 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["successful"], 2)
         self.assertEqual(seen["async_verify"], [False])
         self.assertEqual(len(seen["mcp_calls"]), 2)
+
+    async def test_load_substances_from_api_stdio_prefers_uuid_ingest_without_preflight(self):
+        """stdio API loading should skip preflight chatter and use compact UUID ingest when available."""
+        seen = {"uuid_calls": [], "ensure_called": 0, "stats_called": 0}
+
+        class FakeAsyncResponse:
+            def __init__(self, payload, status_code=200):
+                self._payload = payload
+                self.status_code = status_code
+
+            def json(self):
+                return self._payload
+
+        class FakeAsyncClient:
+            def __init__(self, *, timeout, verify):
+                self.verify = verify
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, timeout=30.0, params=None):
+                substance_uuid = url.split("(")[-1].split(")")[0]
+                return FakeAsyncResponse({"uuid": substance_uuid})
+
+        class FakeClient:
+            connection = MCPConnectionSettings(
+                transport="stdio",
+                command="gsrs-mcp-server",
+            )
+            _tool_names = {"gsrs_ingest", "gsrs_ingest_from_uuid", "gsrs_health", "gsrs_statistics"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def ensure_ingest_available(self):
+                seen["ensure_called"] += 1
+                raise AssertionError("stdio preflight should be skipped")
+
+            async def get_statistics(self):
+                seen["stats_called"] += 1
+                raise AssertionError("stdio statistics preflight should be skipped")
+
+            def supports_uuid_ingest(self):
+                return True
+
+            async def ingest_uuid(self, substance_uuid):
+                seen["uuid_calls"].append(substance_uuid)
+                return f"Ingested **{substance_uuid}** - 2 chunks."
+
+        with patch("scripts.load_data.httpx.AsyncClient", FakeAsyncClient), \
+             patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):
+            result = await load_substances_from_api(
+                mcp_url="http://localhost:8000/mcp",
+                uuids=["uuid-1"],
+                batch_size=1,
+                dry_run=False,
+                verify_ssl=False,
+                transport="stdio",
+                command="gsrs-mcp-server",
+            )
+
+        self.assertEqual(result["successful"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["total_chunks"], 2)
+        self.assertEqual(seen["uuid_calls"], ["uuid-1"])
+        self.assertEqual(seen["ensure_called"], 0)
+        self.assertEqual(seen["stats_called"], 0)
 
     async def test_load_substances_from_api_skips_statistics_after_taskgroup_error(self):
         """A failing gsrs_statistics call should not prevent later ingestion attempts."""
