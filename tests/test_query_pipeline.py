@@ -5,6 +5,7 @@ import unittest
 from uuid import uuid4
 
 from app.config import settings
+from app.models.db import DBQueryResult
 from app.services.query_rewrite import QueryRewriteService, RewriteResult
 from app.services.metadata_filters import MetadataFilterBuilder
 from app.services.lexical_retrieval import LexicalRetriever
@@ -118,7 +119,7 @@ class TestAggregationService(unittest.TestCase):
             ],
         }
         doc = self._make_doc("Ibuprofen codes section", metadata)
-        candidates = [(doc, 0.9)]
+        candidates = [DBQueryResult(doc, 0.9)]
 
         result = self.service.aggregate(candidates, "How many identifiers has Ibuprofen?", "aggregation_identifiers")
         self.assertEqual(result.total_count, 2)
@@ -136,7 +137,7 @@ class TestAggregationService(unittest.TestCase):
             "all_codes": {"SMS_ID": "SMS-003", "xEVMPD": "XEV-004"},
         }
         doc = self._make_doc("Configured identifier systems", metadata)
-        candidates = [(doc, 0.9)]
+        candidates = [DBQueryResult(doc, 0.9)]
 
         result = service.aggregate(candidates, "List all identifiers of Ibuprofen", "aggregation_identifiers")
         types = {item["type"] for item in result.items}
@@ -153,7 +154,7 @@ class TestAggregationService(unittest.TestCase):
             "names": ["Advil", "Motrin", "Nurofen"],
         }
         doc = self._make_doc("Ibuprofen names section", metadata)
-        candidates = [(doc, 0.9)]
+        candidates = [DBQueryResult(doc, 0.9)]
 
         result = self.service.aggregate(candidates, "List all names of Ibuprofen", "aggregation_names")
         self.assertEqual(result.total_count, 4)  # canonical + 3 names
@@ -162,7 +163,7 @@ class TestAggregationService(unittest.TestCase):
     def test_empty_aggregation(self):
         """Test aggregation with no data."""
         doc = self._make_doc("Some text", {})
-        candidates = [(doc, 0.5)]
+        candidates = [DBQueryResult(doc, 0.5)]
 
         result = self.service.aggregate(candidates, "How many identifiers?", "aggregation_identifiers")
         self.assertEqual(result.total_count, 0)
@@ -177,7 +178,7 @@ class TestAggregationService(unittest.TestCase):
             ],
         }
         doc = self._make_doc("Aspirin codes", metadata)
-        candidates = [(doc, 0.9)]
+        candidates = [DBQueryResult(doc, 0.9)]
 
         result = self.service.aggregate(candidates, "How many identifiers has Aspirin?", "aggregation_identifiers")
         self.assertIn("Aspirin", result.raw_text_summary)
@@ -265,12 +266,12 @@ class TestLexicalRetriever(unittest.TestCase):
         doc2 = self._make_doc("Aspirin is a common medication")
         doc3 = self._make_doc("Protein structure analysis")
 
-        candidates = [(doc1, 0.9), (doc2, 0.8), (doc3, 0.3)]
+        candidates = [DBQueryResult(doc1, 0.9), DBQueryResult(doc2, 0.8), DBQueryResult(doc3, 0.3)]
         results = self.retriever.search("CAS code aspirin", candidates)
 
         # doc1 should score highest due to term overlap
         self.assertTrue(len(results) > 0)
-        self.assertEqual(results[0][0].chunk_id, doc1.chunk_id)
+        self.assertEqual(results[0].document.chunk_id, doc1.chunk_id)
 
     def test_empty_candidates(self):
         """Test that empty candidates return empty results."""
@@ -280,7 +281,7 @@ class TestLexicalRetriever(unittest.TestCase):
     def test_empty_query(self):
         """Test that empty query returns empty results."""
         doc = self._make_doc("Some text")
-        results = self.retriever.search("", [(doc, 0.9)])
+        results = self.retriever.search("", [DBQueryResult(doc, 0.9)])
         self.assertEqual(results, [])
 
     def test_metadata_included_in_search(self):
@@ -289,10 +290,10 @@ class TestLexicalRetriever(unittest.TestCase):
             "Some chunk text",
             metadata={"canonical_name": "Ibuprofen", "codes": [{"code": "15687-27-1"}]}
         )
-        candidates = [(doc, 0.8)]
+        candidates = [DBQueryResult(doc, 0.8)]
         results = self.retriever.search("ibuprofen 15687-27-1", candidates)
         self.assertTrue(len(results) > 0)
-        self.assertGreater(results[0][1], 0)
+        self.assertGreater(results[0].score, 0)
 
 
 class TestRerankerService(unittest.TestCase):
@@ -317,11 +318,11 @@ class TestRerankerService(unittest.TestCase):
         doc1 = self._make_doc("CAS code for aspirin is 50-78-2")
         doc2 = self._make_doc("General information about proteins")
 
-        candidates = [(doc1, 0.7), (doc2, 0.8)]
+        candidates = [DBQueryResult(doc1, 0.7), DBQueryResult(doc2, 0.8)]
         reranked = self.reranker.rerank(candidates, "CAS code aspirin")
 
         # doc1 should rank higher due to term overlap
-        self.assertEqual(reranked[0][0].chunk_id, doc1.chunk_id)
+        self.assertEqual(reranked[0].document.chunk_id, doc1.chunk_id)
 
     def test_identifier_match_boost(self):
         """Test that identifier matches get boosted."""
@@ -331,25 +332,25 @@ class TestRerankerService(unittest.TestCase):
         )
         doc2 = self._make_doc("Some other text", metadata={"codes": []})
 
-        candidates = [(doc1, 0.5), (doc2, 0.6)]
+        candidates = [DBQueryResult(doc1, 0.5), DBQueryResult(doc2, 0.6)]
         reranked = self.reranker.rerank(candidates, "CAS 50-78-2")
 
         # doc1 should rank higher due to identifier match
-        self.assertEqual(reranked[0][0].chunk_id, doc1.chunk_id)
+        self.assertEqual(reranked[0].document.chunk_id, doc1.chunk_id)
 
     def test_section_match_boost(self):
         """Test that section matches get boosted."""
         doc1 = self._make_doc("Some text about codes", metadata={}, section="codes")
         doc2 = self._make_doc("Some text", metadata={}, section="names")
 
-        candidates = [(doc1, 0.5), (doc2, 0.55)]
+        candidates = [DBQueryResult(doc1, 0.5), DBQueryResult(doc2, 0.55)]
         reranked = self.reranker.rerank(
             candidates, "code lookup",
             filters={"sections": ["codes"]}
         )
 
         # doc1 is in codes section, should get boost
-        self.assertEqual(reranked[0][0].chunk_id, doc1.chunk_id)
+        self.assertEqual(reranked[0].document.chunk_id, doc1.chunk_id)
 
     def test_empty_candidates(self):
         """Test that empty candidates return empty list."""
@@ -359,12 +360,12 @@ class TestRerankerService(unittest.TestCase):
     def test_scores_normalized(self):
         """Test that scores are normalized to [0, 1]."""
         docs = [self._make_doc(f"Document {i}") for i in range(3)]
-        candidates = [(doc, 0.5 + i * 0.1) for i, doc in enumerate(docs)]
+        candidates = [DBQueryResult(doc, 0.5 + i * 0.1) for i, doc in enumerate(docs)]
         reranked = self.reranker.rerank(candidates, "test")
 
-        for _, score in reranked:
-            self.assertGreaterEqual(score, 0)
-            self.assertLessEqual(score, 1.0)
+        for r in reranked:
+            self.assertGreaterEqual(r.score, 0)
+            self.assertLessEqual(r.score, 1.0)
 
     def test_exact_name_metadata_boost(self):
         """Exact canonical-name matches should outrank generic higher-hybrid hits."""
@@ -374,10 +375,10 @@ class TestRerankerService(unittest.TestCase):
         )
         doc2 = self._make_doc("Aspirin is discussed broadly")
 
-        candidates = [(doc1, 0.45), (doc2, 0.75)]
+        candidates = [DBQueryResult(doc1, 0.45), DBQueryResult(doc2, 0.75)]
         reranked = self.reranker.rerank(candidates, '"Aspirin"')
 
-        self.assertEqual(reranked[0][0].chunk_id, doc1.chunk_id)
+        self.assertEqual(reranked[0].document.chunk_id, doc1.chunk_id)
 
     def test_configured_identifier_field_boost(self):
         """Configured code-system fields should participate in identifier reranking."""
@@ -387,10 +388,10 @@ class TestRerankerService(unittest.TestCase):
         doc1 = self._make_doc("ASKP entry", metadata={"askp": "ASKP-001"})
         doc2 = self._make_doc("Generic entry", metadata={})
 
-        candidates = [(doc1, 0.45), (doc2, 0.7)]
+        candidates = [DBQueryResult(doc1, 0.45), DBQueryResult(doc2, 0.7)]
         reranked = reranker.rerank(candidates, "ASKP ASKP-001")
 
-        self.assertEqual(reranked[0][0].chunk_id, doc1.chunk_id)
+        self.assertEqual(reranked[0].document.chunk_id, doc1.chunk_id)
 
 
 class TestAbstentionPolicy(unittest.TestCase):
@@ -481,7 +482,7 @@ class TestEvidenceExtractor(unittest.TestCase):
     def setUp(self):
         self.extractor = EvidenceExtractor(max_evidence_count=5)
 
-    def _make_candidate(self, text: str, score: float) -> tuple:
+    def _make_candidate(self, text: str, score: float) -> DBQueryResult:
         doc = VectorDocument(
             id=str(uuid4()),
             chunk_id=f"chunk_{uuid4()}",
@@ -491,7 +492,7 @@ class TestEvidenceExtractor(unittest.TestCase):
             embedding=[0.0] * 384,
             metadata_json={},
         )
-        return (doc, score)
+        return DBQueryResult(doc, score)
 
     def test_extraction_limits(self):
         """Test that evidence extraction respects max count."""
@@ -613,8 +614,14 @@ class _GoldenEmbeddingService:
 
 class _GoldenVectorDb:
     def __init__(self, semantic_results, deterministic_results):
-        self.semantic_results = semantic_results
-        self.deterministic_results = deterministic_results
+        self.semantic_results = [
+            r if hasattr(r, "document") else DBQueryResult(r[0], r[1])
+            for r in semantic_results
+        ]
+        self.deterministic_results = [
+            r if hasattr(r, "document") else DBQueryResult(r[0], r[1])
+            for r in deterministic_results
+        ]
 
     def search_by_example(self, example, top_k=20, mode="match"):
         if example.get("reliable_codes", {}).get("CAS") == "50-78-2":
@@ -671,9 +678,10 @@ class TestIdentifierFirstQueryPipeline(unittest.TestCase):
         self.assertTrue(response.degraded)
         self.assertIn("identifier-first", response.debug["retrieval_mode"])
 
-    def test_identifier_first_miss_abstains_without_fuzzy_fallback(self):
+    def test_identifier_first_miss_falls_back_to_hybrid_retrieval(self):
+        """When identifier-first routing finds no results, fall back to hybrid retrieval."""
         vector_db = _StaticVectorDb([])
-        embedding = _FailingEmbeddingService()
+        embedding = _GoldenEmbeddingService()
         pipeline = QueryPipelineService(
             vector_db=vector_db,
             embedding_service=embedding,
@@ -690,10 +698,10 @@ class TestIdentifierFirstQueryPipeline(unittest.TestCase):
             )
         )
 
-        self.assertFalse(embedding.called)
         self.assertTrue(response.abstained)
-        self.assertIn("identifier-first lookup", response.abstain_reason)
-        self.assertEqual(response.debug["deterministic_route"]["result_count"], 0)
+        # Hybrid retrieval was used as fallback, retrieval_mode should be "hybrid"
+        self.assertEqual(response.debug["retrieval_mode"], "hybrid")
+        self.assertIn("deterministic_route_fallback", response.debug)
 
     def test_inchikey_query_uses_identifier_first_routing(self):
         doc, score = self._make_result(

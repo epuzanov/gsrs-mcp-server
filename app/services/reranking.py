@@ -3,10 +3,10 @@ GSRS MCP Server - Reranker Service
 Heuristic-based reranking with optional LLM rerank mode.
 """
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from app.config import Settings, settings
-from app.models.db import VectorDocument
+from app.models.db import DBQueryResult, VectorDocument
 from app.services.code_systems import get_identifier_field_names, get_identifier_mention_patterns
 
 
@@ -37,22 +37,22 @@ class RerankerService:
 
     def rerank(
         self,
-        candidates: List[Tuple[VectorDocument, float]],
+        candidates: List[DBQueryResult],
         query: str,
         rewritten_queries: Optional[List[str]] = None,
         filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Tuple[VectorDocument, float]]:
+    ) -> List[DBQueryResult]:
         """
         Rerank candidates and return sorted by normalized rerank score.
 
         Args:
-            candidates: List of (document, hybrid_score) tuples
+            candidates: List of DBQueryResult with hybrid_score
             query: Original query
             rewritten_queries: List of rewritten queries
             filters: Applied filters
 
         Returns:
-            Reranked list of (document, normalized_score) tuples
+            Reranked list of DBQueryResult with normalized_score
         """
         if not candidates:
             return []
@@ -62,18 +62,18 @@ class RerankerService:
         query_signals = self._extract_query_signals(query, rewritten_queries, filters)
 
         scored = []
-        for doc, hybrid_score in candidates:
-            score = self._score_document(doc, query_terms, hybrid_score, filters, query_signals)
-            scored.append((doc, score))
+        for r in candidates:
+            score = self._score_document(r.document, query_terms, r.score, filters, query_signals)
+            scored.append(DBQueryResult(r.document, score))
 
-        # Sort by score descending
-        scored.sort(key=lambda x: x[1], reverse=True)
+        # Sort by score descending using DBQueryResult comparison
+        scored.sort(reverse=True)
 
         # Normalize scores to [0, 1]
         if scored:
-            max_score = max(s for _, s in scored)
+            max_score = max(r.score for r in scored)
             if max_score > 0:
-                scored = [(doc, s / max_score) for doc, s in scored]
+                scored = [DBQueryResult(r.document, r.score / max_score) for r in scored]
 
         return scored
 

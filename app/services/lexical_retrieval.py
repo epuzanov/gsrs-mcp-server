@@ -3,9 +3,9 @@ GSRS MCP Server - Lexical Retriever
 Keyword/exact-match retrieval for identifiers, aliases, and section-specific terminology.
 """
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from app.models.db import VectorDocument
+from app.models.db import DBQueryResult, VectorDocument
 
 
 class LexicalRetriever:
@@ -21,9 +21,9 @@ class LexicalRetriever:
     def search(
         self,
         query: str,
-        candidates: List[Tuple[VectorDocument, float]],
+        candidates: List[DBQueryResult],
         filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Tuple[VectorDocument, float]]:
+    ) -> List[DBQueryResult]:
         """
         Perform lexical retrieval over candidates.
         Returns scored candidates sorted by lexical score (descending).
@@ -40,21 +40,21 @@ class LexicalRetriever:
             return []
 
         scored = []
-        for doc, semantic_score in candidates:
-            score = self._score_document(doc, terms, filters)
+        for r in candidates:
+            score = self._score_document(r.document, terms, filters)
             if score > 0:
-                scored.append((doc, score))
+                scored.append(DBQueryResult(r.document, score))
 
-        # Sort by score descending
-        scored.sort(key=lambda x: x[1], reverse=True)
+        # Sort by score descending using DBQueryResult comparison
+        scored.sort(reverse=True)
         return scored[: self.top_k]
 
     def score_candidates(
         self,
         query: str,
-        candidates: List[Tuple[VectorDocument, float]],
+        candidates: List[DBQueryResult],
         filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Tuple[VectorDocument, float]]:
+    ) -> List[DBQueryResult]:
         """Score candidates with lexical relevance."""
         return self.search(query, candidates, filters)
 

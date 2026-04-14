@@ -5,6 +5,7 @@ Orchestrates the full query -> answer pipeline.
 import time
 from typing import Any, Dict, List, Optional
 
+from app.models.db import DBQueryResult
 from app.models.api import (
     AskRequest,
     AskResponse,
@@ -145,9 +146,11 @@ class QueryPipelineService:
         retrieval_started = time.perf_counter()
         route_result = self.identifier_router.route(request.query, top_k=request.top_k)
         routing_mode = "hybrid"
-        if route_result is not None:
+        if route_result is not None and route_result.results:
             routing_mode = f"identifier-first:{route_result.route}"
-            candidates = [(result.document, max(result.score, 0.99)) for result in route_result.results]
+            candidates = [
+                DBQueryResult(r.document, max(r.score, 0.99)) for r in route_result.results
+            ]
             if request.debug:
                 debug_info["deterministic_route"] = {
                     "route": route_result.route,
@@ -156,6 +159,12 @@ class QueryPipelineService:
                     "example": route_result.example,
                 }
         else:
+            if route_result is not None and request.debug:
+                debug_info["deterministic_route_fallback"] = {
+                    "route": route_result.route,
+                    "matched_value": route_result.matched_value,
+                    "reason": "identifier-first returned no results, falling back to hybrid retrieval",
+                }
             candidates = self.hybrid_retriever.retrieve(
                 queries=queries,
                 filters=applied_filters,
@@ -192,12 +201,12 @@ class QueryPipelineService:
         if request.debug:
             debug_info["reranked_chunks"] = [
                 {
-                    "chunk_id": doc.chunk_id,
-                    "document_id": str(doc.document_id),
-                    "section": doc.section,
-                    "score": round(score, 4),
+                    "chunk_id": r.document.chunk_id,
+                    "document_id": str(r.document.document_id),
+                    "section": r.document.section,
+                    "score": round(r.score, 4),
                 }
-                for doc, score in reranked[:10]
+                for r in reranked[:10]
             ]
 
         # 5. Extract evidence
@@ -412,15 +421,15 @@ class QueryPipelineService:
             results.append(qr)
         return results
 
-    def _chunk_refs(self, candidates: List[tuple]) -> List[Dict[str, Any]]:
+    def _chunk_refs(self, candidates: List[DBQueryResult]) -> List[Dict[str, Any]]:
         refs: List[Dict[str, Any]] = []
-        for doc, score in candidates:
+        for r in candidates:
             refs.append(
                 {
-                    "chunk_id": doc.chunk_id,
-                    "document_id": str(doc.document_id),
-                    "section": doc.section,
-                    "score": round(score, 4),
+                    "chunk_id": r.document.chunk_id,
+                    "document_id": str(r.document.document_id),
+                    "section": r.document.section,
+                    "score": round(r.score, 4),
                 }
             )
         return refs

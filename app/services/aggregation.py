@@ -3,10 +3,10 @@ GSRS MCP Server - Aggregation Service
 Handles counting/collecting queries like "How many identifiers has Ibuprofen?"
 """
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from app.config import Settings, settings
-from app.models.db import VectorDocument
+from app.models.db import DBQueryResult, VectorDocument
 from app.services.code_systems import get_identifier_field_names
 
 
@@ -34,7 +34,7 @@ class AggregationService:
 
     def aggregate(
         self,
-        candidates: List[Tuple[VectorDocument, float]],
+        candidates: List[DBQueryResult],
         query: str,
         intent: str,
     ) -> AggregationResult:
@@ -42,7 +42,7 @@ class AggregationService:
         Perform aggregation over retrieved candidates.
 
         Args:
-            candidates: Ranked (document, score) tuples
+            candidates: Ranked DBQueryResult objects
             query: Original query
             intent: e.g., "aggregation_identifiers"
 
@@ -65,8 +65,8 @@ class AggregationService:
         seen_codes: Set[str] = set()
         seen_names: Set[str] = set()
 
-        for doc, score in candidates:
-            metadata = doc.metadata_json or {}
+        for r in candidates:
+            metadata = r.document.metadata_json or {}
             if not substance_name:
                 substance_name = metadata.get("canonical_name", "")
 

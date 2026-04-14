@@ -1,6 +1,7 @@
 """
 GSRS MCP Server - Vector Database Abstract Interface
 """
+from functools import total_ordering
 from typing import Any, List, Dict, Optional
 from uuid import UUID, uuid4
 from datetime import datetime, date
@@ -129,12 +130,34 @@ class VectorDocument(Base):
         return f"<VectorDocument(chunk_id={self.chunk_id}, section={self.section})>"
 
 
+@total_ordering
 class DBQueryResult:
-    """Represents a query result with similarity score."""
+    """Represents a query result with similarity score.
+
+    Comparison operators order results by score descending, so that
+    ``sorted(results)`` and ``list.sort()`` yield highest scores first
+    without needing a custom key function.
+    """
+
+    __slots__ = ("document", "score")
+
     document: VectorDocument  # VectorDocument from app.models
     score: float
 
     def __init__(self, document: VectorDocument, score: float):
         self.document = document
         self.score = score
+
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, DBQueryResult):
+            return NotImplemented
+        return self.score > other.score
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DBQueryResult):
+            return NotImplemented
+        return self.score == other.score
+
+    def __repr__(self):
+        return f"<DBQueryResult(score={self.score:.4f}, section={self.document.section!r})>"
 

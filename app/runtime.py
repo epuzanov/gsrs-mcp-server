@@ -49,7 +49,7 @@ class ServerRuntime:
                 max_retries=app_settings.llm_max_retries,
                 retry_backoff_ms=app_settings.llm_retry_backoff_ms,
             )
-            if app_settings.llm_api_key
+            if app_settings.llm_url
             else None
         )
         self.gsrs_api = GsrsApiService(

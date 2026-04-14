@@ -3,9 +3,9 @@ GSRS MCP Server - Evidence Extractor
 Selects the most useful chunks for answering, preserving citations.
 """
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from app.models.db import VectorDocument
+from app.models.db import DBQueryResult, VectorDocument
 from app.models.api import Citation
 
 
@@ -42,7 +42,7 @@ class EvidenceExtractor:
 
     def extract(
         self,
-        candidates: List[Tuple[VectorDocument, float]],
+        candidates: List[DBQueryResult],
         query: str,
         intent: str = "general",
     ) -> List[EvidenceResult]:
@@ -50,7 +50,7 @@ class EvidenceExtractor:
         Extract evidence from ranked candidates.
 
         Args:
-            candidates: Ranked (document, score) tuples from reranker
+            candidates: Ranked DBQueryResult objects from reranker
             query: Original query
             intent: Query intent
 
@@ -63,37 +63,37 @@ class EvidenceExtractor:
         results = []
         seen_chunks = set()
         section_counts: dict[str, int] = {}
-        top_score = candidates[0][1]
+        top_score = candidates[0].score
 
-        for index, (doc, score) in enumerate(candidates):
+        for index, r in enumerate(candidates):
             if len(results) >= self.max_evidence_count:
                 break
 
-            if doc.chunk_id in seen_chunks:
+            if r.document.chunk_id in seen_chunks:
                 continue
-            seen_chunks.add(doc.chunk_id)
+            seen_chunks.add(r.document.chunk_id)
 
             if index > 0:
                 minimum_score = max(
                     self.minimum_additional_score,
                     top_score * self.additional_evidence_score_ratio,
                 )
-                if score < minimum_score:
+                if r.score < minimum_score:
                     continue
 
             # Prefer fewer, higher-confidence chunks per section to reduce answer drift.
-            section = str(doc.section)
+            section = str(r.document.section)
             if section_counts.get(section, 0) >= self.max_chunks_per_section:
                 continue
             section_counts[section] = section_counts.get(section, 0) + 1
 
-            citation = self._build_citation(doc)
-            snippet = self._extract_snippet(doc, query)
+            citation = self._build_citation(r.document)
+            snippet = self._extract_snippet(r.document, query)
             citation.quote = snippet[:240] if snippet else None
 
             results.append(EvidenceResult(
-                document=doc,
-                score=score,
+                document=r.document,
+                score=r.score,
                 citation=citation,
                 snippet=snippet,
             ))

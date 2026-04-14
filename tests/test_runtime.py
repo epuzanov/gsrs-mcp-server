@@ -16,6 +16,7 @@ def _test_settings(**overrides):
             "embedding_dimension": 8,
             "startup_validate_external": False,
             "llm_api_key": "",
+            "llm_url": "",
             **overrides,
         }
     )

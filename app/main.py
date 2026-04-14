@@ -961,6 +961,26 @@ async def gsrs_get_document(substance_uuid: str) -> str:
 
 
 @mcp.tool()
+async def gsrs_api_substance_schema() -> str:
+    """Return the JSON Schema for GSRS substance documents (from Substance.model_json_schema()).
+
+    Use this to understand the structure of GSRS API search results and substance payloads
+    for gsrs_ingest, gsrs_ask (with JSON input), or gsrs_similarity_search.
+    """
+    tool = _tool_call("gsrs_api_substance_schema")
+    try:
+        from gsrs.model import Substance
+
+        schema = Substance.model_json_schema()
+        tool.finish("success", result_count=1, citation_count=0)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Error generating substance schema: {exc}"
+
+    return json.dumps(schema, indent=2)
+
+
+@mcp.tool()
 async def gsrs_api_search(
     query: str,
     page: int = 1,

@@ -45,7 +45,9 @@ class TestGsrsApiService(unittest.TestCase):
                 size=7,
             )
 
-        self.assertEqual(payload["results"][0]["uuid"], "sub-1")
+        self.assertEqual(payload["content"][0]["uuid"], "sub-1")
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["count"], 1)
         self.assertEqual(
             calls[0],
             (
