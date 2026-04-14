@@ -4,6 +4,7 @@ GSRS MCP Server Configuration
 import json
 import os
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,11 @@ def _get_list_env(name: str, default: list[str]) -> list[str]:
     if value is None:
         return list(default)
 
+    return _get_list_env_value(value)
+
+
+def _get_list_env_value(value: str) -> list[str]:
+    """Parse a list from a string value (JSON array or comma-separated)."""
     raw_value = value.strip()
     if not raw_value:
         return []
@@ -92,28 +98,46 @@ class Settings(BaseSettings):
     llm_retry_backoff_ms: int = int(os.getenv("LLM_RETRY_BACKOFF_MS", "250"))
 
     # Similar Substance Search - Reliable identifier codes (prioritized)
-    identifier_code_systems: list[str] = _get_list_env(
-        "IDENTIFIER_CODE_SYSTEMS",
-        [
-            "CAS",
-            "UNII",
-            "FDA UNII",
-            "PubChem",
-            "DrugBank",
-            "ChEMBL",
-            "RXCUI",
-            "SMS_ID",
-            "SMSID",
-            "EVMPD",
-            "xEVMPD",
-            "ASK",
-            "ASKP",
-        ],
-    )
-    similarity_reliable_codes: list[str] = _get_list_env(
-        "SIMILARITY_RELIABLE_CODES",
-        ["FDA UNII", "UNII", "SMS_ID", "SMSID", "xEVMPD", "EVMPD", "ASK", "ASKP"],
-    )
+    identifier_code_systems: list[str] | None = None
+    similarity_reliable_codes: list[str] | None = None
+
+    @field_validator("identifier_code_systems", mode="before")
+    @classmethod
+    def parse_identifier_code_systems(cls, v):
+        if v is None:
+            return _get_list_env(
+                "IDENTIFIER_CODE_SYSTEMS",
+                [
+                    "CAS",
+                    "UNII",
+                    "FDA UNII",
+                    "PubChem",
+                    "DrugBank",
+                    "ChEMBL",
+                    "RXCUI",
+                    "SMS_ID",
+                    "SMSID",
+                    "EVMPD",
+                    "xEVMPD",
+                    "ASK",
+                    "ASKP",
+                ],
+            )
+        if isinstance(v, str):
+            return _get_list_env_value(v)
+        return v
+
+    @field_validator("similarity_reliable_codes", mode="before")
+    @classmethod
+    def parse_similarity_reliable_codes(cls, v):
+        if v is None:
+            return _get_list_env(
+                "SIMILARITY_RELIABLE_CODES",
+                ["FDA UNII", "UNII", "SMS_ID", "SMSID", "xEVMPD", "EVMPD", "ASK", "ASKP"],
+            )
+        if isinstance(v, str):
+            return _get_list_env_value(v)
+        return v
 
     # GSRS Official API Configuration
     gsrs_api_url: str = os.getenv("GSRS_API_URL", "https://gsrs.ncats.nih.gov/api/v1")
