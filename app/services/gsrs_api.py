@@ -131,20 +131,11 @@ class GsrsApiService:
                 "envelope": status_payload,
             }
 
-        results_payload = self._request_json(
+        return self._request_json(
             "GET",
             results_url,
             params={"top": size, "skip": 0},
         )
-        return {
-            "results": results_payload.get("content", []),
-            "total": results_payload.get("total", 0),
-            "count": results_payload.get("count", 0),
-            "status": status_payload.get("status", "Unknown"),
-            "finished": bool(status_payload.get("finished") or status_payload.get("determined")),
-            "envelope": status_payload,
-            "results_envelope": results_payload,
-        }
 
     @staticmethod
     def _map_structure_search_type(search_type: str) -> str:
@@ -202,7 +193,7 @@ class GsrsApiService:
             fields: Comma-separated field list to return (e.g. "uuid,name,code")
 
         Returns:
-            GSRS API search response dict with "results" and "total" keys.
+            GSRS API search response dict with "content" and "total" keys.
         """
         params: Dict[str, Any] = {
             "query": query,

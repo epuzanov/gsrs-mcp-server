@@ -990,7 +990,7 @@ async def gsrs_api_search(
         tool.fail(exc, result_count=0, citation_count=0)
         return f"GSRS API search error: {exc}"
 
-    results = resp.get("results", [])
+    results = resp.get("content", [])
     total = resp.get("total", 0)
 
     tool.finish("success" if results else "abstained", result_count=len(results), citation_count=0)
@@ -1055,7 +1055,7 @@ async def gsrs_api_structure_search(
         tool.fail(exc, result_count=0, citation_count=0)
         return f"GSRS structure search error: {exc}"
 
-    results = resp.get("results", [])
+    results = resp.get("content", [])
     tool.finish("success" if results else "abstained", result_count=len(results), citation_count=0)
     if not results:
         return f"No structures found for the given {smiles or inchi}."
@@ -1118,7 +1118,7 @@ async def gsrs_api_sequence_search(
         tool.fail(exc, result_count=0, citation_count=0)
         return f"GSRS sequence search error: {exc}"
 
-    results = resp.get("results", [])
+    results = resp.get("content", [])
     tool.finish("success" if results else "abstained", result_count=len(results), citation_count=0)
     if not results:
         return f"No sequence matches found for the given {sequence_type.lower()} sequence."
