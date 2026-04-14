@@ -122,8 +122,10 @@ mcp = FastMCP(
     "GSRS MCP Server",
     instructions=(
         "GSRS (Global Substance Registration System) MCP server. "
-        "Provides tools for querying substance data, finding similar substances "
-        "by JSON document, and managing the substance database."
+        "The PRIMARY tool for all substance queries is **gsrs_ask** — use it FIRST for any "
+        "substance-related question. It answers natural-language queries with AI-synthesized "
+        "results and citations. Other tools (gsrs_substance_search, gsrs_similarity_search, etc.) "
+        "are for specific technical needs only."
     ),
     token_verifier=token_verifier,
     auth=auth,
@@ -405,10 +407,17 @@ async def gsrs_ask(
     min_confidence: float = 0.0,
     debug: bool = False,
 ) -> str:
-    """Full AI answering pipeline with citations and evidence.
+    """PRIMARY tool for GSRS substance queries. Use this FIRST for any substance-related question.
 
-    Automatically detects if *query* contains a GSRS JSON document and
-    runs similarity search instead.
+    Full AI answering pipeline with citations and evidence. Answers natural-language
+    questions about substances (names, codes, structures, classifications, relationships)
+    by searching the GSRS database and synthesizing results.
+
+    Also accepts GSRS JSON documents for similarity lookup.
+
+    ⚠️ PRIORITY: Always prefer this tool over gsrs_substance_search or gsrs_similarity_search
+    when the user asks a question about a substance. Only use the other tools for specific
+    technical needs (e.g., raw search results without AI synthesis).
 
     Args:
         query: Question or GSRS JSON string.
