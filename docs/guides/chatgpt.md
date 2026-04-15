@@ -96,7 +96,7 @@ Runnable API example:
 
 Lower-level direct MCP client examples:
 
-- [examples/gsrs_tool.py](../../examples/gsrs_tool.py)
+- [scripts/gsrs_mcp_cli.py](../../scripts/gsrs_mcp_cli.py)
 - [examples/gsrs_function.py](../../examples/gsrs_function.py)
 
 Minimal command:

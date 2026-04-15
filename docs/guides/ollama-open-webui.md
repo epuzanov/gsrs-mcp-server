@@ -86,16 +86,17 @@ This is useful when:
 Good repo references for this approach:
 
 - [examples/gsrs_function.py](../../examples/gsrs_function.py)
+- [examples/gsrs_tool.py](../../examples/gsrs_tool.py)
 - [examples/gsrs_system_prompt.md](../../examples/gsrs_system_prompt.md)
 - [examples/gsrs_system_prompt_minimal.md](../../examples/gsrs_system_prompt_minimal.md)
 
 Typical pattern:
 
 1. Create an Open WebUI function
-2. Inside that function, call the GSRS MCP endpoint over streamable HTTP
-3. Expose only the behavior you want, for example:
-   `ask_gsrs(question)` -> internally calls `gsrs_ask`
-4. Add a system prompt that tells the assistant when to use the function
+2. Import `examples/gsrs_function.py` as a Pipe Function
+3. Configure the valves for `MCP_URL` and `MCP_TOKEN`
+4. Select either the `GSRS/Ask` or `GSRS/Retrieve` Pipe model in chat
+5. Add a system prompt that tells the assistant when to use the function
 
 Use this path when:
 
@@ -130,6 +131,10 @@ Suggested tool behavior:
 - default user-facing tool: `gsrs_ask`
 - diagnostics/admin tool: `gsrs_health`
 - expert/debug tool: `gsrs_retrieve` with `debug=true`
+
+Implementation note:
+
+- Import [examples/gsrs_tool.py](../../examples/gsrs_tool.py) into `Workspace -> Tools` to expose native methods such as `answer_question`, `retrieve_evidence`, `find_similar_substances`, `check_health`, `get_document`, and the `gsrs_api_*` lookups.
 
 Use this path when:
 
