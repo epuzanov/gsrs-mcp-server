@@ -4,6 +4,8 @@ Exposes GSRS substance search, Q&A, similarity search, and management
 via the Model Context Protocol (MCP) using streamable-http transport.
 """
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -13,7 +15,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -24,6 +26,9 @@ from mcp.server.fastmcp import FastMCP
 from app.config import settings
 from app.models.api import (
     AskRequest,
+    ERIQueryRequest,
+    ERIQueryResponse,
+    ERIResult,
     QueryResult,
     SimilarSubstanceResult,
 )
@@ -160,6 +165,50 @@ async def health_check(request: Request) -> JSONResponse:
     payload = runtime.get_status_payload()
     payload["live"] = True
     return JSONResponse(payload)
+
+
+@mcp.custom_route("/eri/query", methods=["POST"], include_in_schema=True)
+async def eri_query(request: Request) -> JSONResponse:
+    """Legacy ERI retrieval route kept for older Open WebUI tools."""
+    auth_error = _eri_auth_error_response(request)
+    if auth_error is not None:
+        return auth_error
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"detail": "Invalid JSON request body."}, status_code=400)
+
+    try:
+        eri_request = ERIQueryRequest.model_validate(payload)
+    except ValidationError as exc:
+        return JSONResponse(
+            {
+                "detail": "Invalid ERI query payload.",
+                "errors": exc.errors(),
+            },
+            status_code=422,
+        )
+
+    try:
+        results, retrieval_mode = _retrieve_query_results(
+            query=eri_request.query,
+            top_k=eri_request.top_k,
+            filters=eri_request.filters,
+        )
+    except RuntimeError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+    except Exception as exc:
+        logger.exception("eri_query_failed")
+        return JSONResponse({"detail": f"Retrieval error: {exc}"}, status_code=500)
+
+    response = ERIQueryResponse(
+        results=[ERIResult(chunk=result.document, score=result.score) for result in results]
+    )
+    return JSONResponse(
+        response.model_dump(),
+        headers={"X-GSRS-Retrieval-Mode": retrieval_mode},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +369,68 @@ def _runtime_debug_state() -> Dict[str, Any]:
         "backend": runtime.backend_name,
         "degraded_summary": runtime.degraded_summary,
     }
+
+
+def _decode_basic_authorization(header_value: str) -> Optional[tuple[str, str]]:
+    """Decode a Basic auth header into username/password credentials."""
+    if not header_value.lower().startswith("basic "):
+        return None
+
+    encoded = header_value.split(" ", 1)[1].strip()
+    if not encoded:
+        return None
+
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        return None
+
+    if ":" not in decoded:
+        return None
+    return tuple(decoded.split(":", 1))
+
+
+def _eri_auth_error_response(request: Request) -> Optional[JSONResponse]:
+    """Validate legacy ERI auth, accepting the old Basic scheme and current bearer token."""
+    if not settings.mcp_password:
+        return None
+
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        if token == settings.mcp_password:
+            return None
+    else:
+        credentials = _decode_basic_authorization(authorization)
+        if credentials is not None:
+            username, password = credentials
+            expected_username = settings.mcp_username.strip()
+            if password == settings.mcp_password and (not expected_username or username == expected_username):
+                return None
+
+    return JSONResponse(
+        {"detail": "Unauthorized"},
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="GSRS ERI"'},
+    )
+
+
+def _retrieve_query_results(
+    query: str,
+    *,
+    top_k: int,
+    filters: Optional[Dict[str, Any]] = None,
+):
+    """Run the raw retrieval path shared by MCP and legacy ERI interfaces."""
+    if not runtime.retrieval_available():
+        raise RuntimeError(f"Retrieval is currently unavailable: {runtime.retrieval_unavailable_reason()}")
+
+    route_result = runtime.query_pipeline.identifier_router.route(query, top_k=top_k) if runtime.query_pipeline else None
+    if route_result is not None:
+        return route_result.results, f"identifier-first:{route_result.route}"
+
+    embedding = runtime.embedding_service.embed(query)
+    return runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=filters), "semantic"
 
 
 def _format_ask_response(response) -> str:
@@ -576,26 +687,22 @@ async def gsrs_retrieve(
     """
     tool = _tool_call("gsrs_retrieve", query_type="semantic")
     try:
-        if not runtime.retrieval_available():
-            reason = runtime.retrieval_unavailable_reason()
+        parsed_filters = json.loads(filters) if filters else None
+        try:
+            results, retrieval_mode = _retrieve_query_results(
+                query=query,
+                top_k=top_k,
+                filters=parsed_filters,
+            )
+        except RuntimeError as exc:
             tool.finish(
                 "degraded",
                 result_count=0,
                 citation_count=0,
                 error_type="RuntimeUnavailable",
-                error_message=reason,
+                error_message=str(exc),
             )
-            return f"Retrieval is currently unavailable: {reason}"
-
-        parsed_filters = json.loads(filters) if filters else None
-        route_result = runtime.query_pipeline.identifier_router.route(query, top_k=top_k) if runtime.query_pipeline else None
-        if route_result is not None:
-            results = route_result.results
-            retrieval_mode = f"identifier-first:{route_result.route}"
-        else:
-            embedding = runtime.embedding_service.embed(query)
-            results = runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=parsed_filters)
-            retrieval_mode = "semantic"
+            return str(exc)
         tool.bind(
             query_type=_query_type_from_retrieval_mode(
                 retrieval_mode,

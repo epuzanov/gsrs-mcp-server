@@ -14,7 +14,7 @@
 - CLI: `gsrs-mcp-server`
 - Empty-but-connected vector stores are healthy and ready
 
-This repository no longer documents or relies on legacy REST-style routes such as `/ingest` or `/query`. The public contract is the MCP tool surface plus the health endpoints above.
+This repository is MCP-first. The primary public contract is the MCP tool surface plus the health endpoints above. A legacy compatibility route, `POST /eri/query`, is also exposed for older Open WebUI tools that still call the former ERI retrieval endpoint.
 
 Quick start from the repo root:
 
@@ -32,6 +32,7 @@ curl http://localhost:8000/readyz
 
 - MCP transport: `streamable-http` on `/mcp`, or `stdio`
 - Health endpoints: `/livez`, `/readyz`, `/health`
+- Legacy compatibility endpoint: `POST /eri/query`
 - MCP auth: HTTP Bearer token on `/mcp` when `MCP_PASSWORD` is set
 - MCP tools:
   - `gsrs_ask`
@@ -206,6 +207,7 @@ Or ingest through MCP with `gsrs_ingest`.
 - `/livez`: process is running
 - `/readyz`: runtime is initialized and retrieval dependencies are usable
 - `/health`: combined snapshot with component state and light in-memory metrics
+- `/eri/query`: legacy retrieval-only compatibility route for older Open WebUI tools
 
 `/health` returns a deterministic `status` field:
 

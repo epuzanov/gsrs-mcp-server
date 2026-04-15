@@ -1,5 +1,6 @@
 """Tests for MCP server wiring, readiness semantics, and MCP smoke paths."""
 import asyncio
+import base64
 import importlib
 import json
 import unittest
@@ -35,6 +36,9 @@ class FakeVectorDb:
         return 1
 
     def search_by_example(self, example, top_k=20, mode="match"):
+        return []
+
+    def similarity_search(self, embedding, top_k=10, filters=None):
         return []
 
 
@@ -146,6 +150,7 @@ class FakeRuntime:
         )
         self.metrics = FakeMetrics()
         self.vector_db = FakeVectorDb()
+        self.embedding_service = SimpleNamespace(embed=lambda query: [0.0] * settings.embedding_dimension)
         self.query_pipeline = FakeQueryPipeline()
         self.chunker = object() if chunker_ready else None
         self.llm_service = None
@@ -346,6 +351,106 @@ class TestHealthRoutes(unittest.TestCase):
         self.assertEqual(payload["status"], "ready_degraded")
         self.assertTrue(payload["ready"])
         self.assertIn("chunker", payload["optional_component_errors"])
+
+
+class TestLegacyERIRoutes(unittest.IsolatedAsyncioTestCase):
+    async def test_eri_query_requires_legacy_auth(self):
+        from app import main as main_module
+
+        main = importlib.reload(main_module)
+        app = main.mcp.streamable_http_app()
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            timeout=30.0,
+        ) as client:
+            response = await client.post("/eri/query", json={"query": "aspirin"})
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Basic", response.headers.get("www-authenticate", ""))
+
+    async def test_eri_query_returns_legacy_result_shape_for_open_webui_tool(self):
+        from app import main as main_module
+
+        main = importlib.reload(main_module)
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        document = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=uuid4(),
+            section="codes",
+            source_url="https://example.test/substances/aspirin",
+            text="CAS code for aspirin is 50-78-2.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={"canonical_name": "Aspirin"},
+        )
+        result = SimpleNamespace(document=document, score=0.99)
+        route_result = SimpleNamespace(
+            route="code",
+            results=[result],
+            matched_value="50-78-2",
+            example={"reliable_codes": {"CAS": "50-78-2"}},
+        )
+        fake_runtime.query_pipeline.identifier_router = SimpleNamespace(
+            route=lambda query, top_k=10: route_result
+        )
+
+        basic_token = base64.b64encode(
+            f"{settings.mcp_username}:{settings.mcp_password}".encode("utf-8")
+        ).decode("ascii")
+        headers = {"Authorization": f"Basic {basic_token}"}
+
+        with patch.object(main, "runtime", fake_runtime):
+            app = main.mcp.streamable_http_app()
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                headers=headers,
+                timeout=30.0,
+            ) as client:
+                response = await client.post(
+                    "/eri/query",
+                    json={"query": "CAS 50-78-2", "top_k": 3},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("x-gsrs-retrieval-mode"), "identifier-first:code")
+        payload = response.json()
+        self.assertIn("results", payload)
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["text"], "CAS code for aspirin is 50-78-2.")
+        self.assertEqual(payload["results"][0]["score"], 0.99)
+        self.assertEqual(payload["results"][0]["metadata"]["section"], "codes")
+        self.assertEqual(payload["results"][0]["metadata"]["source_url"], "https://example.test/substances/aspirin")
+        self.assertEqual(payload["results"][0]["metadata"]["document_id"], str(document.document_id))
+
+    async def test_eri_query_reports_runtime_unavailable(self):
+        from app import main as main_module
+
+        main = importlib.reload(main_module)
+        fake_runtime = FakeRuntime(ready=False, retrieval_ready=False)
+        basic_token = base64.b64encode(
+            f"{settings.mcp_username}:{settings.mcp_password}".encode("utf-8")
+        ).decode("ascii")
+        headers = {"Authorization": f"Basic {basic_token}"}
+
+        with patch.object(main, "runtime", fake_runtime):
+            app = main.mcp.streamable_http_app()
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                headers=headers,
+                timeout=30.0,
+            ) as client:
+                response = await client.post("/eri/query", json={"query": "aspirin"})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("Retrieval is currently unavailable", response.json()["detail"])
 
 
 class TestToolBehavior(unittest.TestCase):

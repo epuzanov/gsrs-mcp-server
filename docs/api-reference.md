@@ -19,6 +19,18 @@ Combined snapshot of liveness, readiness, component state, backend, and light in
 
 Streamable HTTP MCP endpoint.
 
+### `POST /eri/query`
+
+Legacy ERI compatibility endpoint for older Open WebUI tools.
+
+Behavior:
+
+- accepts HTTP Basic auth using `MCP_USERNAME` and `MCP_PASSWORD`
+- also accepts `Authorization: Bearer <MCP_PASSWORD>` for compatibility with newer deployments
+- expects a JSON body with `query`, optional `top_k`, and optional `filters`
+- returns `{"results": [...]}` with legacy `id`, `text`, `score`, and `metadata` fields
+- uses the same identifier-first and semantic retrieval logic as `gsrs_retrieve`
+
 ## MCP Tools
 
 ### `gsrs_ask`

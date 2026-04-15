@@ -1,6 +1,6 @@
 # Examples
 
-The examples in this folder show how to call the GSRS MCP Server as an MCP client. They do not rely on deprecated REST mirror endpoints.
+The examples in this folder show how to call the GSRS MCP Server as an MCP client. The server remains MCP-first, but also exposes a legacy `POST /eri/query` compatibility route for older Open WebUI tools from `gsrs-rag-gateway`.
 
 Files:
 
