@@ -1,6 +1,5 @@
 """Tests for MCP server wiring, readiness semantics, and MCP smoke paths."""
 import asyncio
-import base64
 import importlib
 import json
 import unittest
@@ -354,22 +353,25 @@ class TestHealthRoutes(unittest.TestCase):
 
 
 class TestLegacyERIRoutes(unittest.IsolatedAsyncioTestCase):
-    async def test_eri_query_requires_legacy_auth(self):
+    async def test_eri_query_allows_unauthenticated_compatibility_requests(self):
         from app import main as main_module
 
         main = importlib.reload(main_module)
-        app = main.mcp.streamable_http_app()
-        transport = httpx.ASGITransport(app=app)
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        fake_runtime.query_pipeline.identifier_router = SimpleNamespace(route=lambda query, top_k=10: None)
 
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://testserver",
-            timeout=30.0,
-        ) as client:
-            response = await client.post("/eri/query", json={"query": "aspirin"})
+        with patch.object(main, "runtime", fake_runtime):
+            app = main.mcp.streamable_http_app()
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                timeout=30.0,
+            ) as client:
+                response = await client.post("/eri/query", json={"query": "aspirin"})
 
-        self.assertEqual(response.status_code, 401)
-        self.assertIn("Basic", response.headers.get("www-authenticate", ""))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("results", response.json())
 
     async def test_eri_query_returns_legacy_result_shape_for_open_webui_tool(self):
         from app import main as main_module
@@ -398,18 +400,12 @@ class TestLegacyERIRoutes(unittest.IsolatedAsyncioTestCase):
             route=lambda query, top_k=10: route_result
         )
 
-        basic_token = base64.b64encode(
-            f"{settings.mcp_username}:{settings.mcp_password}".encode("utf-8")
-        ).decode("ascii")
-        headers = {"Authorization": f"Basic {basic_token}"}
-
         with patch.object(main, "runtime", fake_runtime):
             app = main.mcp.streamable_http_app()
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
-                headers=headers,
                 timeout=30.0,
             ) as client:
                 response = await client.post(
@@ -433,10 +429,6 @@ class TestLegacyERIRoutes(unittest.IsolatedAsyncioTestCase):
 
         main = importlib.reload(main_module)
         fake_runtime = FakeRuntime(ready=False, retrieval_ready=False)
-        basic_token = base64.b64encode(
-            f"{settings.mcp_username}:{settings.mcp_password}".encode("utf-8")
-        ).decode("ascii")
-        headers = {"Authorization": f"Basic {basic_token}"}
 
         with patch.object(main, "runtime", fake_runtime):
             app = main.mcp.streamable_http_app()
@@ -444,7 +436,6 @@ class TestLegacyERIRoutes(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
-                headers=headers,
                 timeout=30.0,
             ) as client:
                 response = await client.post("/eri/query", json={"query": "aspirin"})
@@ -547,6 +538,50 @@ class TestToolBehavior(unittest.TestCase):
         self.assertIn("Insufficient evidence to answer confidently", output)
         self.assertIn("Uncertainty:", output)
         self.assertNotIn("Citations:", output)
+
+    def test_gsrs_retrieve_uses_hybrid_pipeline_for_natural_language_queries(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        document = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=uuid4(),
+            section="codes",
+            text="CAS code for aspirin is 50-78-2.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={"canonical_name": "Aspirin"},
+        )
+        candidate = SimpleNamespace(document=document, score=0.93)
+        fake_runtime.query_pipeline = SimpleNamespace(
+            rewrite_service=SimpleNamespace(
+                rewrite=lambda query: SimpleNamespace(
+                    canonical_query="what is the cas code for aspirin?",
+                    rewrites=["CAS aspirin", "aspirin code"],
+                    filters={"sections": ["codes"]},
+                    intent="identifier_lookup",
+                )
+            ),
+            filter_builder=SimpleNamespace(
+                build=lambda request_filters=None, substance_classes=None, sections=None, inferred_filters=None: {
+                    "sections": ["codes"]
+                }
+            ),
+            identifier_router=SimpleNamespace(route=lambda query, top_k=10: None),
+            hybrid_retriever=SimpleNamespace(retrieve=lambda queries, filters=None: [candidate]),
+            reranker=SimpleNamespace(
+                rerank=lambda candidates, query, rewritten_queries=None, filters=None: candidates
+            ),
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(main.gsrs_retrieve("What is the CAS code for aspirin?", debug=True))
+
+        self.assertIn("Found 1 result(s)", output)
+        self.assertIn("50-78-2", output)
+        self.assertIn('"retrieval_mode": "hybrid"', output)
+        self.assertIn('"canonical_query": "what is the cas code for aspirin?"', output)
+        self.assertIn('"applied_filters"', output)
 
 
 class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):

@@ -4,8 +4,6 @@ Exposes GSRS substance search, Q&A, similarity search, and management
 via the Model Context Protocol (MCP) using streamable-http transport.
 """
 import asyncio
-import base64
-import binascii
 import json
 import logging
 import os
@@ -170,10 +168,6 @@ async def health_check(request: Request) -> JSONResponse:
 @mcp.custom_route("/eri/query", methods=["POST"], include_in_schema=True)
 async def eri_query(request: Request) -> JSONResponse:
     """Legacy ERI retrieval route kept for older Open WebUI tools."""
-    auth_error = _eri_auth_error_response(request)
-    if auth_error is not None:
-        return auth_error
-
     try:
         payload = await request.json()
     except json.JSONDecodeError:
@@ -191,7 +185,7 @@ async def eri_query(request: Request) -> JSONResponse:
         )
 
     try:
-        results, retrieval_mode = _retrieve_query_results(
+        results, retrieval_mode, _ = _retrieve_query_results(
             query=eri_request.query,
             top_k=eri_request.top_k,
             filters=eri_request.filters,
@@ -371,50 +365,6 @@ def _runtime_debug_state() -> Dict[str, Any]:
     }
 
 
-def _decode_basic_authorization(header_value: str) -> Optional[tuple[str, str]]:
-    """Decode a Basic auth header into username/password credentials."""
-    if not header_value.lower().startswith("basic "):
-        return None
-
-    encoded = header_value.split(" ", 1)[1].strip()
-    if not encoded:
-        return None
-
-    try:
-        decoded = base64.b64decode(encoded).decode("utf-8")
-    except (ValueError, binascii.Error, UnicodeDecodeError):
-        return None
-
-    if ":" not in decoded:
-        return None
-    return tuple(decoded.split(":", 1))
-
-
-def _eri_auth_error_response(request: Request) -> Optional[JSONResponse]:
-    """Validate legacy ERI auth, accepting the old Basic scheme and current bearer token."""
-    if not settings.mcp_password:
-        return None
-
-    authorization = request.headers.get("authorization", "")
-    if authorization.lower().startswith("bearer "):
-        token = authorization.split(" ", 1)[1].strip()
-        if token == settings.mcp_password:
-            return None
-    else:
-        credentials = _decode_basic_authorization(authorization)
-        if credentials is not None:
-            username, password = credentials
-            expected_username = settings.mcp_username.strip()
-            if password == settings.mcp_password and (not expected_username or username == expected_username):
-                return None
-
-    return JSONResponse(
-        {"detail": "Unauthorized"},
-        status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="GSRS ERI"'},
-    )
-
-
 def _retrieve_query_results(
     query: str,
     *,
@@ -425,12 +375,69 @@ def _retrieve_query_results(
     if not runtime.retrieval_available():
         raise RuntimeError(f"Retrieval is currently unavailable: {runtime.retrieval_unavailable_reason()}")
 
-    route_result = runtime.query_pipeline.identifier_router.route(query, top_k=top_k) if runtime.query_pipeline else None
+    diagnostics: Dict[str, Any] = {
+        "canonical_query": query.lower().strip(),
+        "rewrites": [query],
+        "intent": "semantic",
+        "applied_filters": filters,
+        "candidate_count": None,
+        "reranked_count": None,
+    }
+
+    pipeline = runtime.query_pipeline
+    required_pipeline_parts = (
+        "rewrite_service",
+        "filter_builder",
+        "identifier_router",
+        "hybrid_retriever",
+        "reranker",
+    )
+    if pipeline and all(hasattr(pipeline, attr) for attr in required_pipeline_parts):
+        rewrite_result = pipeline.rewrite_service.rewrite(query)
+        applied_filters = pipeline.filter_builder.build(
+            request_filters=filters,
+            inferred_filters=rewrite_result.filters,
+        )
+        diagnostics.update(
+            {
+                "canonical_query": rewrite_result.canonical_query,
+                "rewrites": [query] + rewrite_result.rewrites,
+                "intent": rewrite_result.intent,
+                "applied_filters": applied_filters,
+            }
+        )
+
+        route_result = pipeline.identifier_router.route(query, top_k=top_k)
+        if route_result is not None and route_result.results:
+            diagnostics["candidate_count"] = len(route_result.results)
+            diagnostics["reranked_count"] = len(route_result.results)
+            return route_result.results[:top_k], f"identifier-first:{route_result.route}", diagnostics
+
+        candidates = pipeline.hybrid_retriever.retrieve(
+            queries=diagnostics["rewrites"],
+            filters=applied_filters,
+        )
+        reranked = pipeline.reranker.rerank(
+            candidates=candidates,
+            query=query,
+            rewritten_queries=rewrite_result.rewrites,
+            filters=applied_filters,
+        )
+        diagnostics["candidate_count"] = len(candidates)
+        diagnostics["reranked_count"] = len(reranked)
+        return reranked[:top_k], "hybrid", diagnostics
+
+    route_result = pipeline.identifier_router.route(query, top_k=top_k) if pipeline else None
     if route_result is not None:
-        return route_result.results, f"identifier-first:{route_result.route}"
+        diagnostics["candidate_count"] = len(route_result.results)
+        diagnostics["reranked_count"] = len(route_result.results)
+        return route_result.results[:top_k], f"identifier-first:{route_result.route}", diagnostics
 
     embedding = runtime.embedding_service.embed(query)
-    return runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=filters), "semantic"
+    results = runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=filters)
+    diagnostics["candidate_count"] = len(results)
+    diagnostics["reranked_count"] = len(results)
+    return results, "semantic", diagnostics
 
 
 def _format_ask_response(response) -> str:
@@ -689,7 +696,7 @@ async def gsrs_retrieve(
     try:
         parsed_filters = json.loads(filters) if filters else None
         try:
-            results, retrieval_mode = _retrieve_query_results(
+            results, retrieval_mode, diagnostics = _retrieve_query_results(
                 query=query,
                 top_k=top_k,
                 filters=parsed_filters,
@@ -706,7 +713,7 @@ async def gsrs_retrieve(
         tool.bind(
             query_type=_query_type_from_retrieval_mode(
                 retrieval_mode,
-                default="semantic",
+                default=str(diagnostics.get("intent") or "semantic"),
             )
         )
 
@@ -714,6 +721,8 @@ async def gsrs_retrieve(
             "retrieval",
             retrieval_mode=retrieval_mode,
             result_count=len(results),
+            candidate_count=diagnostics.get("candidate_count"),
+            reranked_count=diagnostics.get("reranked_count"),
         )
         tool.finish("success", result_count=len(results), citation_count=0, retrieval_mode=retrieval_mode)
         if not results:
@@ -730,8 +739,14 @@ async def gsrs_retrieve(
                     {
                         "request_id": tool.request_id,
                         "query_type": tool.context.get("query_type", "semantic"),
+                        "canonical_query": diagnostics.get("canonical_query"),
+                        "rewrites": diagnostics.get("rewrites"),
+                        "intent": diagnostics.get("intent"),
                         "retrieval_mode": retrieval_mode,
                         "filters": parsed_filters,
+                        "applied_filters": diagnostics.get("applied_filters"),
+                        "candidate_count": diagnostics.get("candidate_count"),
+                        "reranked_count": diagnostics.get("reranked_count"),
                         "runtime_state": _runtime_debug_state(),
                         "results": [
                             {

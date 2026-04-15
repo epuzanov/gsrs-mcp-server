@@ -25,11 +25,10 @@ Legacy ERI compatibility endpoint for older Open WebUI tools.
 
 Behavior:
 
-- accepts HTTP Basic auth using `MCP_USERNAME` and `MCP_PASSWORD`
-- also accepts `Authorization: Bearer <MCP_PASSWORD>` for compatibility with newer deployments
+- does not require authentication
 - expects a JSON body with `query`, optional `top_k`, and optional `filters`
 - returns `{"results": [...]}` with legacy `id`, `text`, `score`, and `metadata` fields
-- uses the same identifier-first and semantic retrieval logic as `gsrs_retrieve`
+- uses the same raw retrieval logic as `gsrs_retrieve`, including query rewrites, inferred filters, identifier-first routing, and hybrid reranking when available
 
 ## MCP Tools
 
@@ -64,6 +63,12 @@ Arguments:
 - `top_k`
 - `filters`
 - `debug`
+
+Behavior:
+
+- prefers identifier-first deterministic lookup when possible
+- otherwise rewrites the query, infers likely filters, runs hybrid retrieval, and reranks raw chunks
+- returns chunks only, without answer generation
 
 ### `gsrs_similarity_search`
 

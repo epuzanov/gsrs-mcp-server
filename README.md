@@ -141,6 +141,7 @@ When `MCP_PASSWORD` is set, the MCP endpoint uses HTTP Bearer token verification
 
 - MCP HTTP auth: `Authorization: Bearer <MCP_PASSWORD>`
 - Health endpoints: no auth
+- Legacy `/eri/query` compatibility route: no auth
 - Default credentials are for local development only
 - `MCP_USERNAME` is kept for deployment consistency, but the current HTTP auth flow only checks the bearer token value
 
