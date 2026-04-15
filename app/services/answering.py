@@ -187,23 +187,54 @@ Answer the question using only the evidence above. Cite each claim with [1], [2]
     ) -> Tuple[str, List[Citation]]:
         """Generate answer using template-based approach."""
         citations = [e.citation for e in evidence if e.score > 0.3]
-
-        if len(evidence) == 1:
-            e = evidence[0]
-            answer = (
-                "Direct answer:\n"
-                f"{e.snippet or e.document.text[:500]}\n\n"
-                f"Supporting section: {e.citation.section}"
-            )
-        else:
-            parts = []
-            for i, e in enumerate(evidence[:5], 1):
-                snippet = (e.snippet or e.document.text[:300]).strip()
-                parts.append(f"[{i}] ({e.citation.section}): {snippet}")
-
-            answer = "Supporting evidence:\n\n" + "\n\n".join(parts)
-
+        answer = self._build_template_summary(query, evidence)
         return answer, citations
+
+    def _build_template_summary(
+        self,
+        query: str,
+        evidence: List[EvidenceResult],
+    ) -> str:
+        """Build a short fallback answer from the strongest evidence snippets."""
+        primary = self._evidence_snippet(evidence[0], limit=500)
+        if len(evidence) == 1 or self._looks_like_identifier_query(query):
+            return primary
+
+        supporting: List[str] = []
+        for item in evidence[1:3]:
+            snippet = self._evidence_snippet(item, limit=240)
+            if snippet and snippet != primary:
+                supporting.append(snippet)
+
+        if not supporting:
+            return primary
+
+        return primary + "\n\nAdditional supporting detail:\n" + "\n".join(
+            f"- {snippet}" for snippet in supporting
+        )
+
+    def _evidence_snippet(self, evidence: EvidenceResult, *, limit: int) -> str:
+        """Return a cleaned evidence snippet for template fallback answers."""
+        snippet = (evidence.snippet or evidence.document.text[:limit]).strip()
+        if len(snippet) > limit:
+            snippet = snippet[:limit].rstrip() + "..."
+        return snippet
+
+    def _looks_like_identifier_query(self, query: str) -> bool:
+        """Prefer the strongest snippet for identifier lookups."""
+        lowered = query.lower()
+        tokens = (
+            "cas",
+            "unii",
+            "approval id",
+            "approvalid",
+            "inchikey",
+            "inchi key",
+            "identifier",
+            "code",
+            "uuid",
+        )
+        return any(token in lowered for token in tokens)
 
     def _build_evidence_context(self, evidence: List[EvidenceResult]) -> str:
         """Build evidence context for LLM prompt."""

@@ -529,12 +529,12 @@ class TestAnswerGenerator(unittest.TestCase):
     def setUp(self):
         self.generator = AnswerGenerator(use_llm=False)
 
-    def _make_evidence(self, text: str, score: float) -> EvidenceResult:
+    def _make_evidence(self, text: str, score: float, section: str = "codes") -> EvidenceResult:
         doc = VectorDocument(
             id=str(uuid4()),
             chunk_id=f"chunk_{uuid4()}",
             document_id=uuid4(),
-            section="codes",
+            section=section,
             text=text,
             embedding=[0.0] * 384,
             metadata_json={},
@@ -561,6 +561,7 @@ class TestAnswerGenerator(unittest.TestCase):
         evidence = [self._make_evidence("CAS code for aspirin is 50-78-2", 0.9)]
         answer, citations = self.generator.generate("What is the CAS for aspirin?", evidence)
         self.assertIn("50-78-2", answer)
+        self.assertNotIn("Direct answer:", answer)
         self.assertEqual(len(citations), 1)
 
     def test_multiple_evidence(self):
@@ -570,7 +571,31 @@ class TestAnswerGenerator(unittest.TestCase):
             self._make_evidence("Aspirin molecular weight is 180.16", 0.8),
         ]
         answer, citations = self.generator.generate("Tell me about aspirin", evidence)
-        self.assertIn("evidence", answer.lower())
+        self.assertIn("50-78-2", answer)
+        self.assertIn("180.16", answer)
+        self.assertIn("Additional supporting detail:", answer)
+        self.assertNotIn("Supporting evidence:", answer)
+        self.assertEqual(len(citations), 2)
+
+    def test_identifier_query_prefers_strongest_snippet_without_nested_headings(self):
+        """Identifier fallback should still produce a direct textual answer."""
+        evidence = [
+            self._make_evidence("Primary CAS identifier: 15687-27-1.", 1.0, section="identifier"),
+            self._make_evidence(
+                "Primary WHO INTERNATIONAL PHARMACOPEIA identifier: IBUPROFEN.",
+                0.93,
+                section="identifier",
+            ),
+        ]
+
+        answer, citations = self.generator.generate(
+            "What is the CAS code for ibuprofen?",
+            evidence,
+        )
+
+        self.assertEqual(answer, "Primary CAS identifier: 15687-27-1.")
+        self.assertNotIn("Direct answer:", answer)
+        self.assertNotIn("Supporting evidence:", answer)
         self.assertEqual(len(citations), 2)
 
 
