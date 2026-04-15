@@ -3,6 +3,7 @@ GSRS MCP Server — MCP Server
 Exposes GSRS substance search, Q&A, similarity search, and management
 via the Model Context Protocol (MCP) using streamable-http transport.
 """
+import atexit
 import asyncio
 import json
 import logging
@@ -75,8 +76,25 @@ runtime = ServerRuntime(settings)
 @asynccontextmanager
 async def server_lifespan(server):
     """Initialise shared runtime services on startup."""
-    runtime.initialize()
+    _ensure_runtime_initialized()
+    yield
+
+
+def _log_runtime_status() -> None:
+    """Emit a consistent startup log snapshot after runtime initialization."""
     status_payload = runtime.get_status_payload()
+    readiness_summary = getattr(runtime, "readiness_summary", status_payload.get("readiness_summary"))
+    required_component_errors = (
+        runtime.required_component_errors()
+        if hasattr(runtime, "required_component_errors")
+        else status_payload.get("required_component_errors", {})
+    )
+    degraded_summary = getattr(runtime, "degraded_summary", status_payload.get("degraded_summary"))
+    optional_component_errors = (
+        runtime.optional_component_errors()
+        if hasattr(runtime, "optional_component_errors")
+        else status_payload.get("optional_component_errors", {})
+    )
     logger.info(
         "runtime_initialized",
         extra=status_payload,
@@ -86,8 +104,8 @@ async def server_lifespan(server):
             "runtime_not_ready",
             extra={
                 "backend": runtime.backend_name,
-                "readiness_summary": runtime.readiness_summary,
-                "required_component_errors": runtime.required_component_errors(),
+                "readiness_summary": readiness_summary,
+                "required_component_errors": required_component_errors,
             },
         )
     elif runtime.degraded:
@@ -95,12 +113,27 @@ async def server_lifespan(server):
             "runtime_degraded",
             extra={
                 "backend": runtime.backend_name,
-                "degraded_summary": runtime.degraded_summary,
-                "optional_component_errors": runtime.optional_component_errors(),
+                "degraded_summary": degraded_summary,
+                "optional_component_errors": optional_component_errors,
             },
         )
-    yield
-    runtime.shutdown()
+
+
+def _ensure_runtime_initialized() -> None:
+    """Initialize the shared runtime once, even when health routes are hit before MCP sessions."""
+    if getattr(runtime, "initialized", False):
+        return
+    runtime.initialize()
+    _log_runtime_status()
+
+
+def _shutdown_runtime() -> None:
+    """Best-effort process shutdown for long-lived runtime clients."""
+    if getattr(runtime, "initialized", False):
+        runtime.shutdown()
+
+
+atexit.register(_shutdown_runtime)
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +185,7 @@ async def live_check(request: Request) -> JSONResponse:
 @mcp.custom_route("/readyz", methods=["GET"], include_in_schema=True)
 async def readiness_check(request: Request) -> JSONResponse:
     """Readiness probe: dependencies and runtime state are ready for retrieval."""
+    _ensure_runtime_initialized()
     payload = runtime.get_status_payload()
     status_code = 200 if payload["ready"] else 503
     return JSONResponse(payload, status_code=status_code)
@@ -160,6 +194,7 @@ async def readiness_check(request: Request) -> JSONResponse:
 @mcp.custom_route("/health", methods=["GET"], include_in_schema=True)
 async def health_check(request: Request) -> JSONResponse:
     """Combined health endpoint with liveness, readiness, and dependency state."""
+    _ensure_runtime_initialized()
     payload = runtime.get_status_payload()
     payload["live"] = True
     return JSONResponse(payload)
@@ -168,6 +203,7 @@ async def health_check(request: Request) -> JSONResponse:
 @mcp.custom_route("/eri/query", methods=["POST"], include_in_schema=True)
 async def eri_query(request: Request) -> JSONResponse:
     """Legacy ERI retrieval route kept for older Open WebUI tools."""
+    _ensure_runtime_initialized()
     try:
         payload = await request.json()
     except json.JSONDecodeError:

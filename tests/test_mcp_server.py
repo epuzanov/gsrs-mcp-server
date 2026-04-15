@@ -303,6 +303,18 @@ class TestMCPConfig(unittest.TestCase):
 
 
 class TestHealthRoutes(unittest.TestCase):
+    def test_health_initializes_runtime_when_first_request_arrives(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        fake_runtime.initialized = False
+
+        with patch.object(main, "runtime", fake_runtime):
+            response = asyncio.run(main.health_check(None))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(fake_runtime.initialized)
+
     def test_readyz_reports_empty_database_as_ready(self):
         from app import main
 
