@@ -36,7 +36,8 @@ Arguments:
 
 Behavior:
 
-- auto-detects pasted GSRS JSON and falls back to similarity search
+- expects a natural-language question, not a GSRS JSON payload
+- returns a redirect message when a GSRS substance JSON document is passed
 - prefers identifier-first deterministic lookup when possible
 - abstains on low-confidence retrieval
 - degrades to retrieval-only output if answer generation is unavailable

@@ -384,6 +384,23 @@ class TestToolBehavior(unittest.TestCase):
 
         self.assertIn("No similar substances found", output)
 
+    def test_gsrs_ask_redirects_gsrs_json_to_similarity_search(self):
+        from app import main
+
+        payload = json.dumps(
+            {
+                "uuid": "12345678-1234-1234-1234-123456789abc",
+                "names": [{"name": "Aspirin"}],
+                "codes": [],
+            }
+        )
+
+        with patch.object(main, "runtime", FakeRuntime(ready=False, retrieval_ready=False)):
+            output = asyncio.run(main.gsrs_ask(payload))
+
+        self.assertIn("gsrs_ask only accepts natural-language questions", output)
+        self.assertIn("gsrs_similarity_search", output)
+
     def test_gsrs_ask_degraded_answer_includes_citations(self):
         from app import main
 

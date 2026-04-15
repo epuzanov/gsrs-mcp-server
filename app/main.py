@@ -413,47 +413,31 @@ async def gsrs_ask(
     questions about substances (names, codes, structures, classifications, relationships)
     by searching the GSRS database and synthesizing results.
 
-    Also accepts GSRS JSON documents for similarity lookup.
-
     ⚠️ PRIORITY: Always prefer this tool over gsrs_substance_search or gsrs_similarity_search
     when the user asks a question about a substance. Only use the other tools for specific
     technical needs (e.g., raw search results without AI synthesis).
 
     Args:
-        query: Question or GSRS JSON string.
+        query: Natural-language question about a substance.
         top_k: Results to retrieve.
         answer_style: concise | standard | detailed.
         return_evidence: Include evidence chunks.
         min_confidence: Minimum confidence threshold.
 
     Returns:
-        Answer with citations, or similar-substance report.
+        Answer with citations.
     """
     tool = _tool_call("gsrs_ask", query_type="question")
     try:
         parsed = _try_parse_json(query)
-        substance = parsed if parsed and _is_gsrs_substance(parsed) else None
-
-        if substance:
+        if parsed and _is_gsrs_substance(parsed):
             tool.bind(query_type="substance_json")
-            example = _extract_search_criteria(substance)
-            results = runtime.vector_db.search_by_example(
-                example=example, top_k=top_k, mode="contains",
+            tool.finish("abstained", result_count=0, citation_count=0)
+            return (
+                "gsrs_ask only accepts natural-language questions. "
+                "For GSRS substance JSON, call gsrs_similarity_search with the payload as "
+                "`substance_json`."
             )
-            groups = _group_by_substance(results, True, example.get("uuid"))
-            name = substance.get("names", [{}])[0].get("name", "substance")
-            tool.finish("success", result_count=len(groups), citation_count=0)
-            if not groups:
-                return f"No similar substances found for **{name}**."
-            lines = [f"Found {len(groups)} substance(s) similar to **{name or 'the provided substance'}**:\n"]
-            for i, result in enumerate(groups, 1):
-                substance_name = result.canonical_name or result.substance_uuid
-                lines.append(f"{i}. **{substance_name}** (score {result.match_score:.2f}, {len(result.chunks)} chunks)")
-                if result.matched_fields:
-                    lines.append(f"   Matched: {', '.join(result.matched_fields[:5])}")
-                if result.chunks:
-                    lines.append(f"   Preview: {result.chunks[0].text[:150]}...")
-            return "\n".join(lines)
 
         if not runtime.retrieval_available():
             reason = runtime.retrieval_unavailable_reason()
@@ -965,7 +949,7 @@ async def gsrs_api_substance_schema() -> str:
     """Return the JSON Schema for GSRS substance documents (from Substance.model_json_schema()).
 
     Use this to understand the structure of GSRS API search results and substance payloads
-    for gsrs_ingest, gsrs_ask (with JSON input), or gsrs_similarity_search.
+    for gsrs_ingest or gsrs_similarity_search.
     """
     tool = _tool_call("gsrs_api_substance_schema")
     try:
