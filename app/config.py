@@ -79,10 +79,7 @@ class Settings(BaseSettings):
     chunker_include_grouped_relationship_summaries: bool = _get_bool_env("CHUNKER_INCLUDE_GROUPED_RELATIONSHIP_SUMMARIES", True)
 
     # MCP endpoint
-    mcp_transport: Literal["stdio", "sse", "streamable-http"] = os.getenv(
-        "MCP_TRANSPORT",
-        "streamable-http",
-    ).lower()
+    mcp_transport: Literal["stdio", "sse", "streamable-http"] = "streamable-http"
     mcp_api: str = os.getenv("MCP_API", "0.0.0.0")
     mcp_port: int = int(os.getenv("MCP_PORT", "8000"))
 
@@ -147,9 +144,8 @@ class Settings(BaseSettings):
     @field_validator("mcp_transport", mode="before")
     @classmethod
     def parse_mcp_transport(cls, v):
-        if v is None:
-            return "streamable-http"
-        return str(v).strip().lower()
+        value = v if v is not None else os.getenv("MCP_TRANSPORT", "streamable-http")
+        return str(value).strip().lower()
 
     # GSRS Official API Configuration
     gsrs_api_url: str = os.getenv("GSRS_API_URL", "https://gsrs.ncats.nih.gov/api/v1")
