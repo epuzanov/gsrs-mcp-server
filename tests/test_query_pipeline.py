@@ -984,8 +984,8 @@ class TestExampleScripts(unittest.TestCase):
         self.assertNotIn("from mcp ", content)
         self.assertNotIn("import mcp", content)
 
-    def test_gsrs_function_uses_mcp_transport(self):
-        """Test that gsrs_function.py uses MCP transport helpers."""
+    def test_gsrs_function_uses_raw_streamable_http_without_mcp_dependency(self):
+        """Test that gsrs_function.py speaks MCP over HTTP without importing the mcp client library."""
         import os
         func_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
@@ -993,8 +993,11 @@ class TestExampleScripts(unittest.TestCase):
         )
         with open(func_path, "r") as f:
             content = f.read()
-        self.assertIn("streamable_http_client", content)
-        self.assertIn("ClientSession", content)
+        self.assertIn("tools/call", content)
+        self.assertIn("notifications/initialized", content)
+        self.assertIn("mcp-session-id", content)
+        self.assertNotIn("from mcp ", content)
+        self.assertNotIn("import mcp", content)
         self.assertIn("gsrs_ask", content)
 
     def test_openai_responses_example_uses_remote_mcp(self):

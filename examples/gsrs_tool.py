@@ -4,20 +4,17 @@ author: Egor Puzanov
 author_url: https://github.com/epuzanov
 git_url: https://github.com/epuzanov/gsrs-mcp-server
 description: Open WebUI Workspace Tool that calls GSRS MCP tools over streamable HTTP without the mcp client library.
-required_open_webui_version: 0.4.0
+required_open_webui_version: 0.6.X
 requirements: httpx
-version: 0.1.1
+version: 0.2.0
 license: MIT
 """
 
 import json
-from typing import Any, Awaitable, Callable, Literal, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 from pydantic import BaseModel, Field
-
-
-EventEmitter = Optional[Callable[[dict], Awaitable[None]]]
 
 JSONRPC_VERSION = "2.0"
 MCP_PROTOCOL_VERSION = "2025-11-25"
@@ -32,7 +29,7 @@ class RawMCPError(RuntimeError):
 class RawMCPClient:
     """Minimal streamable HTTP MCP client for Open WebUI tool calls."""
 
-    def __init__(self, url: str, token: str, timeout: float) -> None:
+    def __init__(self, url: str, token: str, timeout: float, client_name: str) -> None:
         headers = {
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
@@ -41,6 +38,7 @@ class RawMCPClient:
             headers["Authorization"] = f"Bearer {token}"
         self._client = httpx.AsyncClient(headers=headers, timeout=timeout)
         self._url = url
+        self._client_name = client_name
         self._next_id = 1
         self._session_id: str | None = None
         self._protocol_version: str | None = None
@@ -59,8 +57,8 @@ class RawMCPClient:
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "gsrs_tool.py",
-                    "version": "0.1.1",
+                    "name": self._client_name,
+                    "version": "0.2.0",
                 },
             },
             include_protocol_header=False,
@@ -189,7 +187,8 @@ class Tools:
         self,
         question: str,
         tool_name: Optional[Literal["gsrs_ask", "gsrs_retrieve"]] = None,
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Answer a GSRS question through a selected MCP query tool."""
         selected_tool = tool_name or self.valves.DEFAULT_QUERY_TOOL
@@ -202,7 +201,8 @@ class Tools:
         self,
         query: str,
         debug: bool = False,
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Retrieve raw GSRS evidence chunks without answer synthesis."""
         await self._emit_status(__event_emitter__, "Calling gsrs_retrieve...", done=False)
@@ -215,7 +215,8 @@ class Tools:
         substance_json: str,
         top_k: int = 10,
         match_mode: Literal["contains", "match"] = "contains",
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Find GSRS substances similar to a provided GSRS JSON payload."""
         await self._emit_status(__event_emitter__, "Calling gsrs_similarity_search...", done=False)
@@ -232,7 +233,8 @@ class Tools:
 
     async def check_health(
         self,
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Return the current GSRS MCP runtime health payload."""
         await self._emit_status(__event_emitter__, "Calling gsrs_health...", done=False)
@@ -243,7 +245,8 @@ class Tools:
     async def get_document(
         self,
         substance_uuid: str,
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Fetch a full GSRS substance JSON document by UUID."""
         await self._emit_status(__event_emitter__, "Calling gsrs_get_document...", done=False)
@@ -253,7 +256,8 @@ class Tools:
 
     async def get_substance_schema(
         self,
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Return the GSRS substance JSON schema exposed by the MCP server."""
         await self._emit_status(__event_emitter__, "Calling gsrs_api_substance_schema...", done=False)
@@ -267,7 +271,8 @@ class Tools:
         page: int = 1,
         size: int = 20,
         fields: str = "",
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Search the official GSRS API text endpoint."""
         await self._emit_status(__event_emitter__, "Calling gsrs_api_search...", done=False)
@@ -289,7 +294,8 @@ class Tools:
         inchi: str = "",
         search_type: Literal["EXACT", "SIMILAR", "SUBSTRUCTURE", "SUPERSTRUCTURE"] = "EXACT",
         size: int = 20,
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Search the official GSRS API by chemical structure."""
         await self._emit_status(__event_emitter__, "Calling gsrs_api_structure_search...", done=False)
@@ -311,7 +317,8 @@ class Tools:
         search_type: Literal["EXACT", "CONTAINS", "SIMILAR"] = "EXACT",
         sequence_type: Literal["PROTEIN", "NUCLEIC_ACID"] = "PROTEIN",
         size: int = 20,
-        __event_emitter__: EventEmitter = None,
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
     ) -> str:
         """Search the official GSRS API by protein or nucleic-acid sequence."""
         await self._emit_status(__event_emitter__, "Calling gsrs_api_sequence_search...", done=False)
@@ -329,7 +336,12 @@ class Tools:
 
     async def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         timeout = float(self.valves.HTTP_TIMEOUT_SECONDS)
-        async with RawMCPClient(self.valves.MCP_URL, self.valves.MCP_TOKEN, timeout) as client:
+        async with RawMCPClient(
+            self.valves.MCP_URL,
+            self.valves.MCP_TOKEN,
+            timeout,
+            client_name="gsrs_tool.py",
+        ) as client:
             result = await client.call_tool(tool_name, arguments)
             return self._result_to_text(result)
 
@@ -349,7 +361,7 @@ class Tools:
 
     async def _emit_status(
         self,
-        emitter: EventEmitter,
+        emitter: Any,
         description: str,
         *,
         done: bool,
