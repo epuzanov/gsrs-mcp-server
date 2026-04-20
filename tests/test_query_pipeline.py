@@ -968,8 +968,8 @@ class TestExampleScripts(unittest.TestCase):
         )
         self.assertTrue(os.path.isfile(readme_path))
 
-    def test_gsrs_tool_uses_mcp_client(self):
-        """Test that gsrs_tool.py uses MCP client helpers instead of REST shims."""
+    def test_gsrs_tool_uses_raw_streamable_http_without_mcp_dependency(self):
+        """Test that gsrs_tool.py speaks MCP over HTTP without importing the mcp client library."""
         import os
         tool_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
@@ -978,9 +978,11 @@ class TestExampleScripts(unittest.TestCase):
         with open(tool_path, "r") as f:
             content = f.read()
         self.assertIn("gsrs_ask", content)
-        self.assertIn("streamable_http_client", content)
-        self.assertIn("stdio_client", content)
-        self.assertIn("mcp", content.lower())
+        self.assertIn("tools/call", content)
+        self.assertIn("notifications/initialized", content)
+        self.assertIn("mcp-session-id", content)
+        self.assertNotIn("from mcp ", content)
+        self.assertNotIn("import mcp", content)
 
     def test_gsrs_function_uses_mcp_transport(self):
         """Test that gsrs_function.py uses MCP transport helpers."""
