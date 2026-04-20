@@ -1,10 +1,9 @@
 """
 GSRS MCP Server — MCP Server
 Exposes GSRS substance search, Q&A, similarity search, and management
-via the Model Context Protocol (MCP) using streamable-http transport.
+via the Model Context Protocol (MCP) using streamable HTTP or legacy SSE.
 """
 import atexit
-import asyncio
 import json
 import logging
 import os
@@ -42,7 +41,7 @@ from app.services.query_rewrite import QueryRewriteService
 # ---------------------------------------------------------------------------
 configure_logging(
     settings.debug_mode,
-    use_stderr=os.getenv("MCP_TRANSPORT", "streamable-http").lower() == "stdio",
+    use_stderr=settings.mcp_transport == "stdio",
 )
 logger = logging.getLogger(__name__)
 
@@ -1312,11 +1311,7 @@ async def gsrs_api_sequence_search(
 
 def main() -> None:
     """Run the MCP server."""
-    transport = os.getenv("MCP_TRANSPORT", "streamable-http").lower()
-    if transport == "stdio":
-        asyncio.run(mcp.run_stdio_async())
-    else:
-        mcp.run(transport="streamable-http")
+    mcp.run(transport=settings.mcp_transport, mount_path="/")
 
 
 if __name__ == "__main__":

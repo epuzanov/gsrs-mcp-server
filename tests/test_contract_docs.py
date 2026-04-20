@@ -13,6 +13,7 @@ class TestReadmeRuntimeContract(unittest.TestCase):
 
         required_fragments = [
             "/mcp",
+            "/sse",
             "stdio",
             "/livez",
             "/readyz",

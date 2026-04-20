@@ -41,6 +41,17 @@ Streamable HTTP:
 gsrs-mcp-server
 ```
 
+This exposes `/mcp` only.
+
+Legacy SSE:
+
+```bash
+set MCP_TRANSPORT=sse
+gsrs-mcp-server
+```
+
+This exposes `/sse` and `/messages/` only.
+
 stdio:
 
 ```bash

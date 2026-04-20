@@ -3,13 +3,16 @@ import asyncio
 import importlib
 import json
 import unittest
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
 import httpx
 from mcp import ClientSession
+from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
+from pydantic import ValidationError
 
 from app.config import settings
 from app.models.api import AskResponse, Citation, QueryResult
@@ -272,9 +275,26 @@ class FakeRuntime:
         return "GSRS upstream validation failed: timed out."
 
 
+def _make_httpx_client_factory(app):
+    @asynccontextmanager
+    async def factory(headers=None, auth=None, timeout=None):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            headers=headers,
+            auth=auth,
+            timeout=timeout,
+        ) as client:
+            yield client
+
+    return factory
+
+
 class TestMCPConfig(unittest.TestCase):
     def test_default_config(self):
         self.assertEqual(settings.mcp_username, "admin")
+        self.assertEqual(settings.mcp_transport, "streamable-http")
         self.assertEqual(settings.default_top_k, 5)
 
     def test_token_verifier_accepts_mcp_password(self):
@@ -300,6 +320,21 @@ class TestMCPConfig(unittest.TestCase):
 
         self.assertIsNotNone(auth)
         self.assertIsNotNone(verifier)
+
+    def test_main_uses_fastmcp_run_with_transport_and_mount_path(self):
+        from app import main
+
+        with patch.object(main.settings, "mcp_transport", "sse"):
+            with patch.object(main.mcp, "run") as run:
+                main.main()
+
+        run.assert_called_once_with(transport="sse", mount_path="/")
+
+    def test_settings_reject_unknown_transport(self):
+        from app.config import Settings
+
+        with self.assertRaises(ValidationError):
+            Settings(mcp_transport="websocket")
 
 
 class TestHealthRoutes(unittest.TestCase):
@@ -614,6 +649,21 @@ class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):
         payload = response.json()
         self.assertEqual(payload["error"], "invalid_token")
 
+    async def test_streamable_http_transport_does_not_expose_sse_endpoint(self):
+        from app import main
+
+        app = main.mcp.streamable_http_app()
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            timeout=30.0,
+        ) as client:
+            response = await client.get("/sse")
+
+        self.assertEqual(response.status_code, 404)
+
     async def test_streamable_http_smoke_path(self):
         from app import main as main_module
 
@@ -681,3 +731,61 @@ class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):
                             combined = "\n".join(text_blocks)
                             self.assertIn("Direct answer:", combined)
                             self.assertTrue("Citations:" in combined or "Insufficient evidence" in combined)
+
+    async def test_sse_requires_bearer_token(self):
+        from app import main
+
+        app = main.mcp.sse_app("/")
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            timeout=30.0,
+        ) as client:
+            response = await client.get("/sse")
+
+        self.assertEqual(response.status_code, 401)
+        payload = response.json()
+        self.assertEqual(payload["error"], "invalid_token")
+
+    async def test_sse_transport_does_not_expose_streamable_http_endpoint(self):
+        from app import main
+
+        app = main.mcp.sse_app("/")
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            timeout=30.0,
+        ) as client:
+            response = await client.post("/mcp", json={})
+
+        self.assertEqual(response.status_code, 404)
+
+    async def test_sse_smoke_path(self):
+        from app import main as main_module
+
+        main = importlib.reload(main_module)
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        with patch.object(main, "runtime", fake_runtime):
+            app = main.mcp.sse_app("/")
+            headers = {"Authorization": f"Bearer {settings.mcp_password}"}
+
+            async with sse_client(
+                "http://testserver/sse",
+                headers=headers,
+                httpx_client_factory=_make_httpx_client_factory(app),
+            ) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    tool_names = {tool.name for tool in tools.tools}
+                    self.assertIn("gsrs_health", tool_names)
+
+                    result = await session.call_tool("gsrs_health", {})
+                    text_blocks = [block.text for block in result.content if hasattr(block, "text")]
+                    combined = "\n".join(text_blocks)
+                    self.assertIn('"backend"', combined)

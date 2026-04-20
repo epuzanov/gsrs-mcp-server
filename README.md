@@ -8,9 +8,9 @@
 
 ## Status
 
-- Runtime: MCP-first via `streamable-http` on `/mcp` or local `stdio`
+- Runtime: MCP-first via `streamable-http` on `/mcp`, legacy `sse` on `/sse`, or local `stdio`
 - Health endpoints: `/livez`, `/readyz`, `/health`
-- Auth: HTTP Bearer token on `/mcp` via `Authorization: Bearer <MCP_PASSWORD>`
+- Auth: HTTP Bearer token on `/mcp` or `/sse` via `Authorization: Bearer <MCP_PASSWORD>`
 - CLI: `gsrs-mcp-server`
 - Empty-but-connected vector stores are healthy and ready
 
@@ -30,10 +30,10 @@ curl http://localhost:8000/readyz
 
 ## What It Exposes
 
-- MCP transport: `streamable-http` on `/mcp`, or `stdio`
+- MCP transport: `streamable-http` on `/mcp`, legacy `sse` on `/sse`, or `stdio`
 - Health endpoints: `/livez`, `/readyz`, `/health`
 - Legacy compatibility endpoint: `POST /eri/query`
-- MCP auth: HTTP Bearer token on `/mcp` when `MCP_PASSWORD` is set
+- MCP auth: HTTP Bearer token on the selected HTTP transport when `MCP_PASSWORD` is set
 - MCP tools:
   - `gsrs_ask`
   - `gsrs_similarity_search`
@@ -118,6 +118,19 @@ Streamable HTTP:
 gsrs-mcp-server
 ```
 
+This mode exposes only `/mcp` for streamable HTTP clients.
+
+Legacy SSE:
+
+```bash
+set MCP_TRANSPORT=sse
+gsrs-mcp-server
+```
+
+This mode exposes `/sse` and `/messages/` for older SSE clients. The server
+starts a single HTTP transport per process, so `/mcp` and `/sse` are not
+available at the same time.
+
 Or stdio for local MCP clients:
 
 ```bash
@@ -137,9 +150,10 @@ An empty but connected database is still considered ready.
 
 ## Authentication
 
-When `MCP_PASSWORD` is set, the MCP endpoint uses HTTP Bearer token verification based on `MCP_PASSWORD`.
+When `MCP_PASSWORD` is set, the selected HTTP MCP transport uses HTTP Bearer token verification based on `MCP_PASSWORD`.
 
-- MCP HTTP auth: `Authorization: Bearer <MCP_PASSWORD>`
+- Streamable HTTP auth: `Authorization: Bearer <MCP_PASSWORD>` on `/mcp`
+- Legacy SSE auth: `Authorization: Bearer <MCP_PASSWORD>` on `/sse` and `/messages/`
 - Health endpoints: no auth
 - Legacy `/eri/query` compatibility route: no auth
 - Default credentials are for local development only
@@ -178,6 +192,21 @@ If `MCP_PASSWORD` is empty, the HTTP MCP endpoint starts without bearer-token en
   "mcpServers": {
     "gsrs": {
       "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer change-me"
+      }
+    }
+  }
+}
+```
+
+### Legacy SSE
+
+```json
+{
+  "mcpServers": {
+    "gsrs": {
+      "url": "http://localhost:8000/sse",
       "headers": {
         "Authorization": "Bearer change-me"
       }

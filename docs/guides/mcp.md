@@ -8,6 +8,7 @@ See also:
 ## Supported Transports
 
 - `streamable-http`
+- `sse`
 - `stdio`
 
 ## Default HTTP Endpoint
@@ -15,6 +16,15 @@ See also:
 ```text
 http://localhost:8000/mcp
 ```
+
+Legacy SSE endpoints:
+
+```text
+http://localhost:8000/sse
+http://localhost:8000/messages/
+```
+
+Only one HTTP transport is exposed per process.
 
 Bearer token:
 
@@ -49,6 +59,21 @@ Authorization: Bearer <MCP_PASSWORD>
   "mcpServers": {
     "gsrs": {
       "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer change-me"
+      }
+    }
+  }
+}
+```
+
+## Legacy SSE Client Example
+
+```json
+{
+  "mcpServers": {
+    "gsrs": {
+      "url": "http://localhost:8000/sse",
       "headers": {
         "Authorization": "Bearer change-me"
       }

@@ -37,9 +37,15 @@ If `LLM_API_KEY` is empty, `gsrs_ask` stays available in retrieval-only mode.
 
 - `MCP_TRANSPORT`
   - `streamable-http`
+  - `sse`
   - `stdio`
 - `MCP_API`
 - `MCP_PORT`
+
+Use one HTTP transport per process:
+
+- `MCP_TRANSPORT=streamable-http` exposes `/mcp`
+- `MCP_TRANSPORT=sse` exposes `/sse` and `/messages/`
 
 ### Authentication
 
