@@ -110,6 +110,8 @@ class GsrsApiService:
 
     def _resolve_async_search(self, envelope: Dict[str, Any], size: int) -> Dict[str, Any]:
         status_payload = dict(envelope)
+        if "content" in status_payload:
+            return status_payload
         status_url = status_payload.get("url")
         results_url = status_payload.get("results")
         deadline = time.monotonic() + max(float(self.timeout), 1.0)
@@ -136,16 +138,6 @@ class GsrsApiService:
             results_url,
             params={"top": size, "skip": 0},
         )
-
-    @staticmethod
-    def _map_structure_search_type(search_type: str) -> str:
-        mapping = {
-            "EXACT": "Exact",
-            "SIMILAR": "Similarity",
-            "SUBSTRUCTURE": "Substructure",
-            "SUPERSTRUCTURE": "Superstructure",
-        }
-        return mapping.get(search_type.upper(), search_type.title())
 
     def get_status(self) -> Dict[str, Any]:
         """Return non-sensitive configuration details."""
@@ -196,43 +188,50 @@ class GsrsApiService:
             GSRS API search response dict with "content" and "total" keys.
         """
         params: Dict[str, Any] = {
-            "query": query,
+            "q": query,
             "page": page,
             "size": size,
         }
         if fields:
             params["fields"] = fields
 
-        resp = self._request("GET", f"{self.base_url}/substances/search", params=params)
-        return resp.json()
+        envelope = self._request_json(
+            "GET",
+            f"{self.base_url}/substances/search",
+            params=params,
+        )
+        return self._resolve_async_search(envelope, size)
 
     def structure_search(
         self,
-        smiles: Optional[str] = None,
-        inchi: Optional[str] = None,
-        search_type: str = "EXACT",
+        structure: Optional[str] = None,
+        search_type: str = "exact",
+        cutoff: float = 0.8,
         size: int = 20,
     ) -> Dict[str, Any]:
         """
         Search substances by chemical structure.
 
         Args:
-            smiles: SMILES string
-            inchi: InChI string
-            search_type: EXACT | SIMILAR | SUBSTRUCTURE | SUPERSTRUCTURE
+            structure: Chemical structure string (SMILES or InChI)
+            search_type: exact | exactplus | sim | substructure | flex | flexplus
+            cutoff: Similarity cutoff for sim searches (0.0 - 1.0)
             size: Max results
 
         Returns:
             GSRS API search response dict.
         """
-        if not smiles and not inchi:
-            raise ValueError("Either smiles or inchi must be provided.")
-        query = inchi or smiles or ""
+        if not structure:
+            raise ValueError("A structure must be provided.")
+        query = structure.strip()
         params: Dict[str, Any] = {
             "q": query,
+            "size": size,
         }
         if search_type:
-            params["type"] = self._map_structure_search_type(search_type)
+            params["type"] = search_type
+        if search_type == "sim":
+            params["cutoff"] = cutoff
 
         envelope = self._request_json(
             "GET",
@@ -244,8 +243,9 @@ class GsrsApiService:
     def sequence_search(
         self,
         sequence: str,
-        search_type: str = "EXACT",
-        sequence_type: str = "NUCLEIC_ACID",
+        search_type: str = "exact",
+        sequence_type: str = "nucleicAcid",
+        cutoff: float = 0.95,
         size: int = 20,
     ) -> Dict[str, Any]:
         """
@@ -253,16 +253,24 @@ class GsrsApiService:
 
         Args:
             sequence: Amino acid or nucleotide sequence string
-            search_type: EXACT | CONTAINS | SIMILAR
-            sequence_type: PROTEIN | NUCLEIC_ACID
+            search_type: GLOBAL | SUB
+            sequence_type: protein | nucleicAcid
+            cutoff: Similarity cutoff for SUB searches (0.0 - 1.0)
             size: Max results
 
         Returns:
             GSRS API search response dict.
         """
+        params: Dict[str, Any] = {
+            "q": sequence,
+            "type": search_type,
+            "seqType": sequence_type,
+            "cutoff": cutoff,
+        }
+
         envelope = self._request_json(
-            "GET",
+            "POST",
             f"{self.example_base_url}/substances/sequenceSearch",
-            params={"q": sequence},
+            data=params,
         )
         return self._resolve_async_search(envelope, size)

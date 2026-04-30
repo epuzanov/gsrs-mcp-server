@@ -1181,27 +1181,27 @@ async def gsrs_api_search(
 
 @mcp.tool()
 async def gsrs_api_structure_search(
-    smiles: str = "",
-    inchi: str = "",
-    search_type: Literal["EXACT", "SIMILAR", "SUBSTRUCTURE", "SUPERSTRUCTURE"] = "EXACT",
+    structure: str = "",
+    search_type: Literal["exact", "exactplus", "sim", "substructure", "flex", "flexplus"] = "exact",
+    cutoff: float = 0.8,
     size: int = 20,
 ) -> str:
     """Search substances by chemical structure via the official GSRS API.
 
-    Supports exact, similar, substructure, and superstructure matching.
+    Supports exact, exactplus, sim, flex, flexplus and substructure matching.
     See https://gsrs.ncats.nih.gov/api-documentation for "chemical search" examples.
 
     Args:
-        smiles: SMILES string (e.g. "CC(=O)OC1=CC=CC=C1C(=O)O").
-        inchi: InChI string (alternative to SMILES).
-        search_type: EXACT | SIMILAR | SUBSTRUCTURE | SUPERSTRUCTURE.
+        structure: Chemical structure string (SMILES or InChI).
+        search_type: exact | exactplus | sim | substructure | flex | flexplus.
+        cutoff: Similarity cutoff for sim searches (0.0 - 1.0).
         size: Maximum number of results.
 
     Returns:
         Matching substances with names, UUIDs, and similarity info.
     """
-    if not smiles and not inchi:
-        return "Error: provide either **smiles** or **inchi**."
+    if not structure:
+        return "Error: provide a **structure**."
 
     tool = _tool_call("gsrs_api_structure_search", query_type="structure")
     try:
@@ -1216,9 +1216,9 @@ async def gsrs_api_structure_search(
             )
             return f"GSRS structure search is currently unavailable: {reason}"
         resp = runtime.gsrs_api.structure_search(
-            smiles=smiles or None,
-            inchi=inchi or None,
+            structure=structure or None,
             search_type=search_type,
+            cutoff=cutoff,
             size=size,
         )
     except Exception as exc:
@@ -1228,7 +1228,7 @@ async def gsrs_api_structure_search(
     results = resp.get("content", [])
     tool.finish("success" if results else "abstained", result_count=len(results), citation_count=0)
     if not results:
-        return f"No structures found for the given {smiles or inchi}."
+        return f"No structures found for the given {structure}."
 
     lines = [f"Found **{len(results)}** structure match(es) ({search_type}):\n"]
     for i, sub in enumerate(results, 1):
@@ -1245,8 +1245,9 @@ async def gsrs_api_structure_search(
 @mcp.tool()
 async def gsrs_api_sequence_search(
     sequence: str,
-    search_type: Literal["EXACT", "CONTAINS", "SIMILAR"] = "EXACT",
-    sequence_type: Literal["PROTEIN", "NUCLEIC_ACID"] = "PROTEIN",
+    search_type: Literal["GLOBAL", "SUB"] = "GLOBAL",
+    sequence_type: Literal["protein", "nucleicAcid"] = "protein",
+    cutoff: float = 0.95,
     size: int = 20,
 ) -> str:
     """Search substances by biological sequence via the official GSRS API.
@@ -1256,9 +1257,10 @@ async def gsrs_api_sequence_search(
 
     Args:
         sequence: Amino acid or nucleotide sequence (e.g. "MVLSPADKTNVKAAWGKVGA").
-        search_type: EXACT | CONTAINS | SIMILAR.
-        sequence_type: PROTEIN | NUCLEIC_ACID.
+        search_type: GLOBAL | SUB.
+        sequence_type: protein | nucleicAcid.
         size: Maximum number of results.
+        cutoff: Similarity cutoff for SUB searches (0.0 - 1.0).
 
     Returns:
         Matching substances with names, UUIDs, and sequence info.
@@ -1282,6 +1284,7 @@ async def gsrs_api_sequence_search(
             sequence=sequence,
             search_type=search_type,
             sequence_type=sequence_type,
+            cutoff=cutoff,
             size=size,
         )
     except Exception as exc:
