@@ -630,6 +630,40 @@ class TestToolBehavior(unittest.TestCase):
         self.assertIn('"canonical_query": "what is the cas code for aspirin?"', output)
         self.assertIn('"applied_filters"', output)
 
+    def test_gsrs_aggregation_passes_result_objects_to_aggregator(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        document = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=uuid4(),
+            section="codes",
+            text="Ibuprofen codes include CAS 15687-27-1.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "canonical_name": "Ibuprofen",
+                "codes": [{"codeSystem": "CAS", "code": "15687-27-1"}],
+            },
+        )
+        candidate = SimpleNamespace(document=document, score=0.93)
+        fake_runtime.vector_db = SimpleNamespace(
+            similarity_search=lambda embedding, top_k=10, filters=None: [candidate]
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(
+                main.gsrs_aggregation(
+                    "How many identifiers has Ibuprofen?",
+                    aggregation_type="count",
+                )
+            )
+
+        self.assertNotIn("tuple", output)
+        self.assertIn("Ibuprofen", output)
+        self.assertIn("1", output)
+        self.assertIn("identifiers", output)
+
 
 class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):
     async def test_streamable_http_requires_bearer_token(self):

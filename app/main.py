@@ -997,13 +997,13 @@ async def gsrs_aggregation(
             for result in results:
                 chunk_id = result.document.chunk_id
                 if chunk_id not in all_candidates:
-                    all_candidates[chunk_id] = (result.document, result.score)
+                    all_candidates[chunk_id] = result
 
         if not all_candidates:
             tool.finish("abstained", result_count=0, citation_count=0)
             return f"No data found for aggregation query: **{query}**."
 
-        sorted_candidates = sorted(all_candidates.values(), key=lambda item: item[1], reverse=True)[:top_k]
+        sorted_candidates = sorted(all_candidates.values(), key=lambda item: item.score, reverse=True)[:top_k]
         result = aggregator.aggregate(sorted_candidates, query, intent=rewrite_result.intent)
         tool.finish("success", result_count=len(sorted_candidates), citation_count=0)
 
