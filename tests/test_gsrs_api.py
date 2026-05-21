@@ -7,13 +7,13 @@ from app.services.gsrs_api import GsrsApiService
 
 
 class TestGsrsApiService(unittest.TestCase):
-    def test_structure_search_uses_documented_example_endpoint_and_polls_results(self):
+    def test_structure_search_uses_documented_endpoint_and_polls_results(self):
         service = GsrsApiService(timeout=1, retry_backoff_ms=0)
         calls = []
 
         def fake_request_json(method, url, **kwargs):
             calls.append((method, url, kwargs))
-            if url.endswith("/ginas/app/api/v1/substances/structureSearch"):
+            if url.endswith("/api/v1/substances/structureSearch"):
                 return {
                     "status": "Running",
                     "finished": False,
@@ -40,8 +40,8 @@ class TestGsrsApiService(unittest.TestCase):
         with patch.object(service, "_request_json", side_effect=fake_request_json), \
              patch("app.services.gsrs_api.time.sleep", return_value=None):
             payload = service.structure_search(
-                smiles="COCN",
-                search_type="SUBSTRUCTURE",
+                structure="COCN",
+                search_type="substructure",
                 size=7,
             )
 
@@ -52,8 +52,8 @@ class TestGsrsApiService(unittest.TestCase):
             calls[0],
             (
                 "GET",
-                "https://gsrs.ncats.nih.gov/ginas/app/api/v1/substances/structureSearch",
-                {"params": {"q": "COCN", "type": "Substructure"}},
+                "https://gsrs.ncats.nih.gov/api/v1/substances/structureSearch",
+                {"params": {"q": "COCN", "size": 7, "type": "substructure"}},
             ),
         )
         self.assertEqual(
@@ -65,13 +65,13 @@ class TestGsrsApiService(unittest.TestCase):
             ),
         )
 
-    def test_sequence_search_uses_documented_example_endpoint(self):
+    def test_sequence_search_uses_documented_endpoint(self):
         service = GsrsApiService(timeout=1, retry_backoff_ms=0)
         calls = []
 
         def fake_request_json(method, url, **kwargs):
             calls.append((method, url, kwargs))
-            if url.endswith("/ginas/app/api/v1/substances/sequenceSearch"):
+            if url.endswith("/api/v1/substances/sequenceSearch"):
                 return {
                     "status": "Done",
                     "finished": True,
@@ -90,18 +90,25 @@ class TestGsrsApiService(unittest.TestCase):
         with patch.object(service, "_request_json", side_effect=fake_request_json):
             payload = service.sequence_search(
                 sequence="MVLSPADKTNVKAAWGKVGA",
-                search_type="SIMILAR",
-                sequence_type="PROTEIN",
+                search_type="GLOBAL",
+                sequence_type="protein",
                 size=3,
             )
 
-        self.assertEqual(payload["results"][0]["uuid"], "seq-1")
+        self.assertEqual(payload["content"][0]["uuid"], "seq-1")
         self.assertEqual(
             calls[0],
             (
-                "GET",
-                "https://gsrs.ncats.nih.gov/ginas/app/api/v1/substances/sequenceSearch",
-                {"params": {"q": "MVLSPADKTNVKAAWGKVGA"}},
+                "POST",
+                "https://gsrs.ncats.nih.gov/api/v1/substances/sequenceSearch",
+                {
+                    "data": {
+                        "q": "MVLSPADKTNVKAAWGKVGA",
+                        "type": "GLOBAL",
+                        "seqType": "protein",
+                        "cutoff": 0.95,
+                    }
+                },
             ),
         )
         self.assertEqual(
@@ -112,6 +119,94 @@ class TestGsrsApiService(unittest.TestCase):
                 {"params": {"top": 3, "skip": 0}},
             ),
         )
+
+    def test_async_search_fetches_pages_until_total_is_reached(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        calls = []
+
+        def fake_request_json(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            skip = kwargs["params"]["skip"]
+            if skip == 0:
+                return {
+                    "total": 5,
+                    "count": 2,
+                    "content": [{"uuid": "sub-1"}, {"uuid": "sub-2"}],
+                }
+            if skip == 2:
+                return {
+                    "total": 5,
+                    "count": 2,
+                    "content": [{"uuid": "sub-3"}, {"uuid": "sub-4"}],
+                }
+            if skip == 4:
+                return {
+                    "total": 5,
+                    "count": 1,
+                    "content": [{"uuid": "sub-5"}],
+                }
+            raise AssertionError(f"Unexpected skip: {skip}")
+
+        with patch.object(service, "_request_json", side_effect=fake_request_json):
+            payload = service._resolve_async_search(
+                {
+                    "status": "Done",
+                    "finished": True,
+                    "determined": True,
+                    "results": "https://gsrs.ncats.nih.gov/api/v1/status(search-key)/results",
+                },
+                size=2,
+            )
+
+        self.assertEqual(
+            [substance["uuid"] for substance in payload["content"]],
+            ["sub-1", "sub-2", "sub-3", "sub-4", "sub-5"],
+        )
+        self.assertEqual(payload["total"], 5)
+        self.assertEqual(payload["count"], 5)
+        self.assertEqual(
+            [call[2]["params"] for call in calls],
+            [
+                {"top": 2, "skip": 0},
+                {"top": 2, "skip": 2},
+                {"top": 2, "skip": 4},
+            ],
+        )
+
+    def test_async_search_preserves_results_list_shape_when_pages_use_results(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+
+        def fake_request_json(method, url, **kwargs):
+            skip = kwargs["params"]["skip"]
+            if skip == 0:
+                return {
+                    "total": 2,
+                    "count": 1,
+                    "results": [{"uuid": "sub-1"}],
+                }
+            if skip == 1:
+                return {
+                    "total": 2,
+                    "count": 1,
+                    "results": [{"uuid": "sub-2"}],
+                }
+            raise AssertionError(f"Unexpected skip: {skip}")
+
+        with patch.object(service, "_request_json", side_effect=fake_request_json):
+            payload = service._resolve_async_search(
+                {
+                    "status": "Done",
+                    "finished": True,
+                    "determined": True,
+                    "results": "https://gsrs.ncats.nih.gov/api/v1/status(search-key)/results",
+                },
+                size=1,
+            )
+
+        expected = [{"uuid": "sub-1"}, {"uuid": "sub-2"}]
+        self.assertEqual(payload["content"], expected)
+        self.assertEqual(payload["results"], expected)
+        self.assertEqual(payload["count"], 2)
 
 
 if __name__ == "__main__":

@@ -1170,8 +1170,7 @@ async def gsrs_api_search(
     lines = [f"Found **{total}** result(s) for **{query}** (page {page}):\n"]
     for i, sub in enumerate(results, 1):
         uuid = sub.get("uuid", "?")
-        names = sub.get("names", [])
-        name = names[0].get("name", "?") if names else "?"
+        name = sub.get("_name", "?")
         sclass = sub.get("substanceClass", "")
         lines.append(f"{i}. **{name}** ({sclass})")
         lines.append(f"   UUID: `{uuid}`")
@@ -1233,8 +1232,7 @@ async def gsrs_api_structure_search(
     lines = [f"Found **{len(results)}** structure match(es) ({search_type}):\n"]
     for i, sub in enumerate(results, 1):
         uuid = sub.get("uuid", "?")
-        names = sub.get("names", [])
-        name = names[0].get("name", "?") if names else "?"
+        name = sub.get("_name", "?")
         sclass = sub.get("substanceClass", "")
         lines.append(f"{i}. **{name}** ({sclass})")
         lines.append(f"   UUID: `{uuid}`")
@@ -1299,8 +1297,7 @@ async def gsrs_api_sequence_search(
     lines = [f"Found **{len(results)}** sequence match(es) ({search_type}, {sequence_type}):\n"]
     for i, sub in enumerate(results, 1):
         uuid = sub.get("uuid", "?")
-        names = sub.get("names", [])
-        name = names[0].get("name", "?") if names else "?"
+        name = sub.get("_name", "?")
         sclass = sub.get("substanceClass", "")
         lines.append(f"{i}. **{name}** ({sclass})")
         lines.append(f"   UUID: `{uuid}`")

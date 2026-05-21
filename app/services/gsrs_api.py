@@ -5,18 +5,17 @@ Provides access to the official GSRS REST API for fetching substance data,
 searching by text, structure, and sequence.
 """
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
 
 # Official GSRS API endpoints
 GSRS_BASE_URL = "https://gsrs.ncats.nih.gov/api/v1"
-GSRS_EXAMPLE_BASE_URL = "https://gsrs.ncats.nih.gov/ginas/app/api/v1"
 GSRS_SUBSTANCE_URL = f"{GSRS_BASE_URL}/substances"
 GSRS_SEARCH_URL = f"{GSRS_BASE_URL}/substances/search"
-GSRS_STRUCTURE_SEARCH_URL = f"{GSRS_EXAMPLE_BASE_URL}/substances/structureSearch"
-GSRS_SEQUENCE_SEARCH_URL = f"{GSRS_EXAMPLE_BASE_URL}/substances/sequenceSearch"
+GSRS_STRUCTURE_SEARCH_URL = f"{GSRS_BASE_URL}/substances/structureSearch"
+GSRS_SEQUENCE_SEARCH_URL = f"{GSRS_BASE_URL}/substances/sequenceSearch"
 
 
 class GsrsApiService:
@@ -32,7 +31,6 @@ class GsrsApiService:
         retry_backoff_ms: int = 250,
     ):
         self.base_url = base_url.rstrip("/")
-        self.example_base_url = self._derive_example_base_url(self.base_url)
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self.public_only = public_only
@@ -77,14 +75,6 @@ class GsrsApiService:
             verify=self.verify_ssl,
             headers={"Accept": "application/json"},
         )
-
-    @staticmethod
-    def _derive_example_base_url(base_url: str) -> str:
-        if "/ginas/app/api/v1" in base_url:
-            return base_url
-        if base_url.endswith("/api/v1"):
-            return f"{base_url[:-len('/api/v1')]}/ginas/app/api/v1"
-        return f"{base_url}/ginas/app/api/v1"
 
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         last_error: Exception | None = None
@@ -133,17 +123,52 @@ class GsrsApiService:
                 "envelope": status_payload,
             }
 
-        return self._request_json(
-            "GET",
-            results_url,
-            params={"top": size, "skip": 0},
-        )
+        page_size = max(int(size or 0), 1)
+        skip = 0
+        content: list[Any] = []
+        first_page: Dict[str, Any] | None = None
+        total: int | None = None
+
+        while total is None or skip < total:
+            page = self._request_json(
+                "GET",
+                results_url,
+                params={"top": page_size, "skip": skip},
+            )
+            if first_page is None:
+                first_page = dict(page)
+
+            page_content = page.get("content") or page.get("results") or []
+            if not isinstance(page_content, list):
+                page_content = []
+
+            content.extend(page_content)
+
+            raw_total = page.get("total")
+            if isinstance(raw_total, int):
+                total = raw_total
+            else:
+                try:
+                    total = int(raw_total)
+                except (TypeError, ValueError):
+                    total = len(content)
+
+            if not page_content:
+                break
+            skip += len(page_content)
+
+        payload = first_page or {}
+        payload["content"] = content
+        if isinstance(payload.get("results"), list):
+            payload["results"] = content
+        payload["count"] = len(content)
+        payload["total"] = total if total is not None else len(content)
+        return payload
 
     def get_status(self) -> Dict[str, Any]:
         """Return non-sensitive configuration details."""
         return {
             "base_url": self.base_url,
-            "example_base_url": self.example_base_url,
             "timeout": self.timeout,
             "verify_ssl": self.verify_ssl,
             "public_only": self.public_only,
@@ -235,7 +260,7 @@ class GsrsApiService:
 
         envelope = self._request_json(
             "GET",
-            f"{self.example_base_url}/substances/structureSearch",
+            f"{self.base_url}/substances/structureSearch",
             params=params,
         )
         return self._resolve_async_search(envelope, size)
@@ -270,7 +295,7 @@ class GsrsApiService:
 
         envelope = self._request_json(
             "POST",
-            f"{self.example_base_url}/substances/sequenceSearch",
+            f"{self.base_url}/substances/sequenceSearch",
             data=params,
         )
         return self._resolve_async_search(envelope, size)
