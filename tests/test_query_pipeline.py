@@ -914,6 +914,21 @@ if __name__ == "__main__":
 class TestExampleScripts(unittest.TestCase):
     """Sanity tests for example scripts."""
 
+    def _load_example_module(self, filename: str):
+        import importlib.util
+        import os
+
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "examples",
+            filename,
+        )
+        spec = importlib.util.spec_from_file_location(filename.replace(".", "_"), path)
+        module = importlib.util.module_from_spec(spec)
+        self.assertIsNotNone(spec.loader)
+        spec.loader.exec_module(module)
+        return module
+
     def test_gsrs_tool_file_exists(self):
         """Test that gsrs_tool.py exists."""
         import os
@@ -999,6 +1014,72 @@ class TestExampleScripts(unittest.TestCase):
         self.assertNotIn("from mcp ", content)
         self.assertNotIn("import mcp", content)
         self.assertIn("gsrs_ask", content)
+
+    def test_cli_builds_tool_arguments_from_json_and_parameters(self):
+        from scripts.gsrs_mcp_cli import build_tool_arguments
+
+        arguments = build_tool_arguments(
+            "What is aspirin?",
+            arguments_json='{"top_k": 3}',
+            parameters=["debug=true", "answer_style=\"concise\""],
+        )
+
+        self.assertEqual(
+            arguments,
+            {
+                "top_k": 3,
+                "debug": True,
+                "answer_style": "concise",
+                "query": "What is aspirin?",
+            },
+        )
+
+    def test_gsrs_tool_passes_parameters_to_called_tool(self):
+        import asyncio
+
+        module = self._load_example_module("gsrs_tool.py")
+        tool = module.Tools()
+        seen = {}
+
+        async def fake_call_tool(tool_name, arguments):
+            seen["tool_name"] = tool_name
+            seen["arguments"] = arguments
+            return "ok"
+
+        tool._call_tool = fake_call_tool
+        result = asyncio.run(
+            tool.answer_question(
+                "What is aspirin?",
+                top_k=3,
+                debug=True,
+                parameters_json='{"min_confidence": 0.6}',
+            )
+        )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(seen["tool_name"], "gsrs_ask")
+        self.assertEqual(seen["arguments"]["query"], "What is aspirin?")
+        self.assertEqual(seen["arguments"]["top_k"], 3)
+        self.assertTrue(seen["arguments"]["debug"])
+        self.assertEqual(seen["arguments"]["min_confidence"], 0.6)
+
+    def test_gsrs_function_merges_body_tool_parameters(self):
+        module = self._load_example_module("gsrs_function.py")
+        pipe = module.Pipe()
+        pipe.valves.DEFAULT_TOOL_ARGUMENTS_JSON = '{"top_k": 5}'
+
+        arguments = pipe._tool_arguments_from_body(
+            {
+                "tool_parameters": {"debug": True},
+                "parameters": {"mcp_arguments": '{"return_evidence": false}'},
+            },
+            "What is aspirin?",
+        )
+
+        self.assertEqual(arguments["query"], "What is aspirin?")
+        self.assertEqual(arguments["top_k"], 5)
+        self.assertTrue(arguments["debug"])
+        self.assertFalse(arguments["return_evidence"])
 
     def test_openai_responses_example_uses_remote_mcp(self):
         """Test that the OpenAI API example uses a remote MCP tool."""

@@ -6,7 +6,7 @@ git_url: https://github.com/epuzanov/gsrs-mcp-server
 description: Open WebUI Pipe Function that routes chat prompts to GSRS MCP tools over streamable HTTP without the mcp client library.
 required_open_webui_version: 0.6.X
 requirements: httpx
-version: 0.2.0
+version: 0.2.1
 license: MIT
 """
 
@@ -187,6 +187,10 @@ class Pipe:
             default=60,
             description="Timeout for MCP HTTP requests in seconds.",
         )
+        DEFAULT_TOOL_ARGUMENTS_JSON: str = Field(
+            default="{}",
+            description="JSON object merged into every MCP tool call, for example {\"top_k\": 5, \"debug\": true}.",
+        )
 
     def __init__(self) -> None:
         self.valves = self.Valves()
@@ -216,7 +220,10 @@ class Pipe:
             done=False,
         )
         try:
-            result = await self._call_tool(tool_name, {"query": query})
+            result = await self._call_tool(
+                tool_name,
+                self._tool_arguments_from_body(body, query),
+            )
         except Exception as exc:
             await self._emit_status(
                 __event_emitter__,
@@ -274,6 +281,51 @@ class Pipe:
                         parts.append(text)
             return "\n".join(parts).strip()
         return ""
+
+    def _tool_arguments_from_body(self, body: dict[str, Any], query: str) -> dict[str, Any]:
+        arguments = self._parse_json_object(
+            self.valves.DEFAULT_TOOL_ARGUMENTS_JSON,
+            label="DEFAULT_TOOL_ARGUMENTS_JSON",
+        )
+        for candidate in self._iter_argument_sources(body):
+            arguments.update(candidate)
+        arguments["query"] = query
+        return arguments
+
+    def _iter_argument_sources(self, body: dict[str, Any]) -> list[dict[str, Any]]:
+        sources: list[dict[str, Any]] = []
+        for key in ("mcp_arguments", "tool_arguments", "tool_parameters"):
+            candidate = body.get(key)
+            parsed = self._coerce_argument_source(candidate, label=key)
+            if parsed:
+                sources.append(parsed)
+
+        parameters = body.get("parameters")
+        if isinstance(parameters, dict):
+            for key in ("mcp_arguments", "tool_arguments", "tool_parameters"):
+                candidate = parameters.get(key)
+                parsed = self._coerce_argument_source(candidate, label=f"parameters.{key}")
+                if parsed:
+                    sources.append(parsed)
+        return sources
+
+    def _coerce_argument_source(self, value: Any, *, label: str) -> dict[str, Any]:
+        if value is None or value == "":
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            return self._parse_json_object(value, label=label)
+        raise ValueError(f"{label} must be a JSON object or JSON object string.")
+
+    def _parse_json_object(self, raw: str, *, label: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{label} must be valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{label} must be a JSON object.")
+        return parsed
 
     def _result_to_text(self, result: dict[str, Any]) -> str:
         structured_content = result.get("structuredContent")

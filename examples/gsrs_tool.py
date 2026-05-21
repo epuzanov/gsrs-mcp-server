@@ -6,7 +6,7 @@ git_url: https://github.com/epuzanov/gsrs-mcp-server
 description: Open WebUI Workspace Tool that calls GSRS MCP tools over streamable HTTP without the mcp client library.
 required_open_webui_version: 0.6.X
 requirements: httpx
-version: 0.2.0
+version: 0.2.1
 license: MIT
 """
 
@@ -187,26 +187,49 @@ class Tools:
         self,
         question: str,
         tool_name: Optional[Literal["gsrs_ask", "gsrs_retrieve"]] = None,
+        top_k: int = 10,
+        answer_style: Literal["concise", "standard", "detailed"] = "standard",
+        return_evidence: bool = True,
+        min_confidence: float = 0.0,
+        debug: bool = False,
+        parameters_json: str = "",
         __user__: Optional[dict] = None,
         __event_emitter__: Any = None,
     ) -> str:
         """Answer a GSRS question through a selected MCP query tool."""
         selected_tool = tool_name or self.valves.DEFAULT_QUERY_TOOL
+        arguments = {"query": question, "top_k": top_k, "debug": debug}
+        if selected_tool == "gsrs_ask":
+            arguments.update(
+                {
+                    "answer_style": answer_style,
+                    "return_evidence": return_evidence,
+                    "min_confidence": min_confidence,
+                }
+            )
+        arguments.update(self._parse_parameters_json(parameters_json))
         await self._emit_status(__event_emitter__, f"Calling {selected_tool}...", done=False)
-        result = await self._call_tool(selected_tool, {"query": question})
+        result = await self._call_tool(selected_tool, arguments)
         await self._emit_status(__event_emitter__, f"{selected_tool} completed.", done=True)
         return result
 
     async def retrieve_evidence(
         self,
         query: str,
+        top_k: int = 10,
+        filters: str = "",
         debug: bool = False,
+        parameters_json: str = "",
         __user__: Optional[dict] = None,
         __event_emitter__: Any = None,
     ) -> str:
         """Retrieve raw GSRS evidence chunks without answer synthesis."""
+        arguments = {"query": query, "top_k": top_k, "debug": debug}
+        if filters:
+            arguments["filters"] = filters
+        arguments.update(self._parse_parameters_json(parameters_json))
         await self._emit_status(__event_emitter__, "Calling gsrs_retrieve...", done=False)
-        result = await self._call_tool("gsrs_retrieve", {"query": query, "debug": debug})
+        result = await self._call_tool("gsrs_retrieve", arguments)
         await self._emit_status(__event_emitter__, "gsrs_retrieve completed.", done=True)
         return result
 
@@ -215,19 +238,21 @@ class Tools:
         substance_json: str,
         top_k: int = 10,
         match_mode: Literal["contains", "match"] = "contains",
+        exclude_self: bool = True,
+        parameters_json: str = "",
         __user__: Optional[dict] = None,
         __event_emitter__: Any = None,
     ) -> str:
         """Find GSRS substances similar to a provided GSRS JSON payload."""
+        arguments = {
+            "substance_json": substance_json,
+            "top_k": top_k,
+            "match_mode": match_mode,
+            "exclude_self": exclude_self,
+        }
+        arguments.update(self._parse_parameters_json(parameters_json))
         await self._emit_status(__event_emitter__, "Calling gsrs_similarity_search...", done=False)
-        result = await self._call_tool(
-            "gsrs_similarity_search",
-            {
-                "substance_json": substance_json,
-                "top_k": top_k,
-                "match_mode": match_mode,
-            },
-        )
+        result = await self._call_tool("gsrs_similarity_search", arguments)
         await self._emit_status(__event_emitter__, "gsrs_similarity_search completed.", done=True)
         return result
 
@@ -271,68 +296,110 @@ class Tools:
         page: int = 1,
         size: int = 20,
         fields: str = "",
+        parameters_json: str = "",
         __user__: Optional[dict] = None,
         __event_emitter__: Any = None,
     ) -> str:
         """Search the official GSRS API text endpoint."""
+        arguments = {
+            "query": query,
+            "page": page,
+            "size": size,
+            "fields": fields,
+        }
+        arguments.update(self._parse_parameters_json(parameters_json))
         await self._emit_status(__event_emitter__, "Calling gsrs_api_search...", done=False)
-        result = await self._call_tool(
-            "gsrs_api_search",
-            {
-                "query": query,
-                "page": page,
-                "size": size,
-                "fields": fields,
-            },
-        )
+        result = await self._call_tool("gsrs_api_search", arguments)
         await self._emit_status(__event_emitter__, "gsrs_api_search completed.", done=True)
         return result
 
     async def api_structure_search(
         self,
+        structure: str = "",
         smiles: str = "",
         inchi: str = "",
-        search_type: Literal["EXACT", "SIMILAR", "SUBSTRUCTURE", "SUPERSTRUCTURE"] = "EXACT",
+        search_type: Literal["exact", "exactplus", "sim", "substructure", "flex", "flexplus"] = "exact",
+        cutoff: float = 0.8,
         size: int = 20,
+        parameters_json: str = "",
         __user__: Optional[dict] = None,
         __event_emitter__: Any = None,
     ) -> str:
         """Search the official GSRS API by chemical structure."""
+        arguments = {
+            "structure": structure or smiles or inchi,
+            "search_type": search_type,
+            "cutoff": cutoff,
+            "size": size,
+        }
+        arguments.update(self._parse_parameters_json(parameters_json))
         await self._emit_status(__event_emitter__, "Calling gsrs_api_structure_search...", done=False)
-        result = await self._call_tool(
-            "gsrs_api_structure_search",
-            {
-                "smiles": smiles,
-                "inchi": inchi,
-                "search_type": search_type,
-                "size": size,
-            },
-        )
+        result = await self._call_tool("gsrs_api_structure_search", arguments)
         await self._emit_status(__event_emitter__, "gsrs_api_structure_search completed.", done=True)
         return result
 
     async def api_sequence_search(
         self,
         sequence: str,
-        search_type: Literal["EXACT", "CONTAINS", "SIMILAR"] = "EXACT",
-        sequence_type: Literal["PROTEIN", "NUCLEIC_ACID"] = "PROTEIN",
+        search_type: Literal["GLOBAL", "SUB"] = "GLOBAL",
+        sequence_type: Literal["protein", "nucleicAcid"] = "protein",
+        cutoff: float = 0.95,
         size: int = 20,
+        parameters_json: str = "",
         __user__: Optional[dict] = None,
         __event_emitter__: Any = None,
     ) -> str:
         """Search the official GSRS API by protein or nucleic-acid sequence."""
+        arguments = {
+            "sequence": sequence,
+            "search_type": search_type,
+            "sequence_type": sequence_type,
+            "cutoff": cutoff,
+            "size": size,
+        }
+        arguments.update(self._parse_parameters_json(parameters_json))
         await self._emit_status(__event_emitter__, "Calling gsrs_api_sequence_search...", done=False)
-        result = await self._call_tool(
-            "gsrs_api_sequence_search",
-            {
-                "sequence": sequence,
-                "search_type": search_type,
-                "sequence_type": sequence_type,
-                "size": size,
-            },
-        )
+        result = await self._call_tool("gsrs_api_sequence_search", arguments)
         await self._emit_status(__event_emitter__, "gsrs_api_sequence_search completed.", done=True)
         return result
+
+    async def call_gsrs_tool(
+        self,
+        tool_name: Literal[
+            "gsrs_ask",
+            "gsrs_retrieve",
+            "gsrs_similarity_search",
+            "gsrs_health",
+            "gsrs_statistics",
+            "gsrs_aggregation",
+            "gsrs_query_optimizer",
+            "gsrs_get_document",
+            "gsrs_api_search",
+            "gsrs_api_structure_search",
+            "gsrs_api_sequence_search",
+            "gsrs_api_substance_schema",
+        ],
+        parameters_json: str = "{}",
+        __user__: Optional[dict] = None,
+        __event_emitter__: Any = None,
+    ) -> str:
+        """Call a safe GSRS MCP tool with a JSON object of parameters."""
+        arguments = self._parse_parameters_json(parameters_json)
+        await self._emit_status(__event_emitter__, f"Calling {tool_name}...", done=False)
+        result = await self._call_tool(tool_name, arguments)
+        await self._emit_status(__event_emitter__, f"{tool_name} completed.", done=True)
+        return result
+
+    def _parse_parameters_json(self, parameters_json: str) -> dict[str, Any]:
+        if not parameters_json:
+            return {}
+        try:
+            parsed = json.loads(parameters_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"parameters_json must be a JSON object: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("parameters_json must be a JSON object.")
+        return parsed
 
     async def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         timeout = float(self.valves.HTTP_TIMEOUT_SECONDS)

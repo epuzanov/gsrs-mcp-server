@@ -32,6 +32,18 @@ Select a different query-oriented tool:
 python scripts/gsrs_mcp_cli.py --transport http --tool gsrs_retrieve --url http://localhost:8000/mcp --token change-me --query "What is the CAS code for aspirin?"
 ```
 
+Pass MCP tool parameters:
+
+```bash
+python scripts/gsrs_mcp_cli.py --transport http --tool gsrs_ask --url http://localhost:8000/mcp --token change-me --query "What is the CAS code for aspirin?" --param top_k=3 --param debug=true
+```
+
+Or pass the whole MCP argument object:
+
+```bash
+python scripts/gsrs_mcp_cli.py --transport http --tool gsrs_api_search --url http://localhost:8000/mcp --token change-me --arguments '{"query":"aspirin","size":5,"fields":"uuid,names,substanceClass"}'
+```
+
 OpenAI API usage:
 
 ```bash
@@ -43,6 +55,7 @@ Open WebUI imports:
 
 - Import `gsrs_function.py` under `Admin Settings -> Functions` when you want a Pipe Function that behaves like a model.
 - Import `gsrs_tool.py` under `Workspace -> Tools` when you want native Open WebUI tool methods such as `answer_question`, `retrieve_evidence`, `get_document`, and the `gsrs_api_*` lookups.
+- In `gsrs_tool.py`, use each method's named parameters for common MCP arguments, or use `parameters_json` / `call_gsrs_tool` to pass an explicit JSON object to the called tool.
 
 Scenario mapping:
 

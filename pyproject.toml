@@ -52,8 +52,8 @@ dependencies = [
     "python-jose[cryptography]>=3.5.0",
     "passlib[bcrypt]>=1.7.4",
     "python-dateutil>=2.9.0.post0",
-    "gsrs-services-ai @ git+https://github.com/epuzanov/gsrs.services.ai.git@73a98a4b5f904d5c3397873a96c00fcd73b9e4fe",
-    "gsrs-model @ git+https://github.com/epuzanov/gsrs.model.git@946cc43af72bee6608e0ea0bc57d386c2d0bb44a",
+    "gsrs-services-ai @ git+https://github.com/epuzanov/gsrs.services.ai.git",
+    "gsrs-model @ git+https://github.com/epuzanov/gsrs.model.git",
     "chromadb>=1.5.7",
     "mcp>=1.0.0",
 ]

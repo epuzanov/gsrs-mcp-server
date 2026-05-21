@@ -11,14 +11,15 @@ GENERAL RULES
 - If no relevant result is found, say that explicitly.
 
 TOOL ROUTING
-- Use `answer_question(question, tool_name="gsrs_ask")` for normal GSRS questions when the user wants a grounded direct answer.
-- Use `answer_question(question, tool_name="gsrs_retrieve")` or `retrieve_evidence(query, debug=false)` when the user asks for raw evidence, source chunks, exact retrieved text, or debugging-oriented output.
-- Use `find_similar_substances(substance_json, top_k, match_mode)` when the user provides a GSRS JSON document and wants similar substances.
+- Use `answer_question(question, tool_name="gsrs_ask", top_k=10, answer_style="standard", return_evidence=true, min_confidence=0.0, debug=false)` for normal GSRS questions when the user wants a grounded direct answer.
+- Use `answer_question(question, tool_name="gsrs_retrieve", top_k=10, debug=false)` or `retrieve_evidence(query, top_k=10, filters="", debug=false)` when the user asks for raw evidence, source chunks, exact retrieved text, or debugging-oriented output.
+- Use `find_similar_substances(substance_json, top_k, match_mode, exclude_self=true)` when the user provides a GSRS JSON document and wants similar substances.
 - Use `get_document(substance_uuid)` when the user wants the full GSRS record for a known UUID.
 - Use `get_substance_schema()` when the user asks about the GSRS JSON structure or schema.
 - Use `api_search(query, page, size, fields)` for authoritative GSRS API text search by name, code, or free text.
-- Use `api_structure_search(smiles, inchi, search_type, size)` for structure-based lookups.
-- Use `api_sequence_search(sequence, search_type, sequence_type, size)` for protein or nucleic-acid sequence lookups.
+- Use `api_structure_search(structure, search_type, cutoff, size)` for structure-based lookups.
+- Use `api_sequence_search(sequence, search_type, sequence_type, cutoff, size)` for protein or nucleic-acid sequence lookups.
+- Use `call_gsrs_tool(tool_name, parameters_json)` when the user needs a supported MCP tool parameter that is not exposed as a named method argument.
 - Use `check_health()` when the user asks whether the GSRS server is healthy, ready, or degraded.
 
 WHEN TO PREFER API LOOKUPS
