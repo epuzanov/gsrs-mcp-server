@@ -142,6 +142,7 @@ class QueryRewriteService:
             sections.append("names")
         if self._contains_identifier_reference(query) or any(w in query_lower for w in ["code", "identifier"]):
             sections.append("codes")
+            sections.append("identifier")
         if any(w in query_lower for w in ["structure", "molecular", "formula", "smiles", "inchi"]):
             sections.append("structure")
         if any(w in query_lower for w in ["property", "physical", "molecular weight", "melting", "boiling"]):
@@ -245,6 +246,23 @@ class QueryRewriteService:
 
     def _extract_substance_name(self, query_lower: str) -> str:
         """Extract the likely substance name from the query."""
+        query_text = query_lower.strip().rstrip("?")
+
+        aggregation_patterns = [
+            r"^how\s+many\s+(?:codes?|identifiers?|ids?)\s+(?:does|do)\s+(.+?)\s+(?:have|has)$",
+            r"^how\s+many\s+(?:codes?|identifiers?|ids?)\s+has\s+(.+)$",
+            r"^how\s+many\s+(?:codes?|identifiers?|ids?)\s+(?:for|of)\s+(.+)$",
+            r"^how\s+many\s+(?:names?|synonyms?)\s+(?:does|do)\s+(.+?)\s+(?:have|has)$",
+            r"^how\s+many\s+(?:names?|synonyms?)\s+has\s+(.+)$",
+            r"^how\s+many\s+(?:names?|synonyms?)\s+(?:for|of)\s+(.+)$",
+            r"^(?:list|enumerate|collect|gather)\s+(?:all\s+)?(?:codes?|identifiers?|ids?|names?|synonyms?|relationships?)\s+(?:for|of)\s+(.+)$",
+            r"^count\s+(?:the\s+)?(?:codes?|identifiers?|ids?|names?|synonyms?|relationships?)\s+(?:for|of)\s+(.+)$",
+        ]
+        for pattern in aggregation_patterns:
+            match = re.match(pattern, query_text)
+            if match:
+                return match.group(1).strip()
+
         # Remove common question patterns
         patterns = [
             r"what\s+is\s+(?:the\s+)?",
@@ -256,7 +274,7 @@ class QueryRewriteService:
             r"lookup\s+",
             r"search\s+for\s+",
         ]
-        name = query_lower
+        name = query_text
         for pat in patterns:
             name = re.sub(pat, "", name).strip()
 

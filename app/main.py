@@ -244,6 +244,36 @@ async def eri_query(request: Request) -> JSONResponse:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _extract_display_name(names: Any) -> Optional[str]:
+    """Return the GSRS display name from a names collection when present."""
+    if not isinstance(names, list):
+        return None
+
+    for entry in names:
+        if not isinstance(entry, dict):
+            continue
+        is_display = entry.get("displayName", entry.get("display_name", False))
+        if isinstance(is_display, str):
+            is_display = is_display.strip().lower() == "true"
+        if is_display and entry.get("name"):
+            return str(entry["name"])
+    return None
+
+
+def _substance_display_name(payload: Dict[str, Any], default: str = "?") -> str:
+    """Return the preferred display label for a GSRS substance-like payload."""
+    display_name = _extract_display_name(payload.get("names"))
+    if display_name:
+        return display_name
+
+    for key in ["canonical_name", "substance_name", "entity_name", "_name", "name"]:
+        value = payload.get(key)
+        if value:
+            return str(value)
+
+    return default
+
+
 def _extract_search_criteria(substance: Dict[str, Any]) -> Dict[str, Any]:
     """Extract prioritised searchable metadata from a GSRS JSON document."""
     criteria: Dict[str, Any] = {}
@@ -278,6 +308,7 @@ def _extract_search_criteria(substance: Dict[str, Any]) -> Dict[str, Any]:
             criteria["structure"] = sd
     if "names" in substance and isinstance(substance["names"], list):
         sys_names, off_names, oth = [], [], []
+        display_name = _extract_display_name(substance["names"])
         for n in substance["names"]:
             val = n.get("name", "") if isinstance(n, dict) else n
             if not val:
@@ -297,7 +328,7 @@ def _extract_search_criteria(substance: Dict[str, Any]) -> Dict[str, Any]:
         if oth:
             criteria["other_names"] = oth
         if all_n:
-            criteria["canonical_name"] = all_n[0]
+            criteria["canonical_name"] = display_name or all_n[0]
     if "classifications" in substance and isinstance(substance["classifications"], list):
         cls_list = []
         for c in substance["classifications"]:
@@ -330,8 +361,8 @@ def _group_by_substance(results, exclude_self: bool = True,
         cname = None
         for d, _ in chunks:
             m = d.metadata_json or {}
-            if "canonical_name" in m and not cname:
-                cname = m["canonical_name"]
+            if not cname:
+                cname = _substance_display_name(m, default="")
             matched.update(m.keys())
         cr = [QueryResult(chunk=d, score=s) for d, s in chunks]
         out.append(SimilarSubstanceResult(
@@ -475,6 +506,107 @@ def _retrieve_query_results(
     return results, "semantic", diagnostics
 
 
+def _aggregation_target_name(query: str, rewriter: QueryRewriteService) -> str:
+    """Best-effort subject extraction for aggregation expansion."""
+    return _normalize_aggregation_name(rewriter._extract_substance_name(query.lower().strip()))
+
+
+def _normalize_aggregation_name(value: str) -> str:
+    """Normalize a substance name for aggregation target matching."""
+    return " ".join(str(value).split()).casefold()
+
+
+def _candidate_aggregation_target_score(candidate: Any, target_name: str) -> int:
+    """Score how well a retrieved chunk belongs to the requested aggregation target."""
+    if not target_name:
+        return 0
+
+    doc = candidate.document
+    metadata = doc.metadata_json or {}
+    exact_values: List[str] = [
+        str(metadata.get("canonical_name", "")),
+        str(metadata.get("entity_name", "")),
+        str(metadata.get("substance_name", "")),
+    ]
+
+    display_name = _extract_display_name(metadata.get("names"))
+    if display_name:
+        exact_values.insert(0, display_name)
+
+    names = metadata.get("names", [])
+    if isinstance(names, list):
+        for name in names:
+            if isinstance(name, dict):
+                exact_values.append(str(name.get("name", "")))
+            else:
+                exact_values.append(str(name))
+
+    exact_terms = metadata.get("exact_match_terms", [])
+    if isinstance(exact_terms, list):
+        exact_values.extend(str(term) for term in exact_terms)
+
+    normalized_values = [
+        _normalize_aggregation_name(value)
+        for value in exact_values
+        if value
+    ]
+    if target_name in normalized_values:
+        return 2
+
+    contains_values = normalized_values + [_normalize_aggregation_name(doc.text)]
+    if any(target_name in value for value in contains_values if value):
+        return 1
+
+    return 0
+
+
+def _candidate_matches_aggregation_target(candidate: Any, target_name: str) -> bool:
+    """Check whether a retrieved chunk appears to belong to the requested substance."""
+    return _candidate_aggregation_target_score(candidate, target_name) > 0
+
+
+def _expand_aggregation_candidates(
+    candidates: List[Any],
+    *,
+    query: str,
+    rewriter: QueryRewriteService,
+    top_k: int,
+) -> List[Any]:
+    """Add sibling chunks from the matched substance before aggregating."""
+    if not candidates:
+        return []
+
+    target_name = _aggregation_target_name(query, rewriter)
+    seed = max(
+        candidates,
+        key=lambda candidate: _candidate_aggregation_target_score(candidate, target_name),
+    )
+    document_id = getattr(seed.document, "document_id", None)
+    if not document_id:
+        return candidates
+
+    try:
+        sibling_results = runtime.vector_db.search_by_example(
+            example={"document_id": str(document_id)},
+            top_k=max(top_k, 200),
+            mode="match",
+        )
+    except Exception:
+        sibling_results = []
+
+    document_id_str = str(document_id)
+    merged: Dict[str, Any] = {
+        result.document.chunk_id: result
+        for result in candidates
+        if str(getattr(result.document, "document_id", "")) == document_id_str
+    }
+    for result in sibling_results:
+        if str(getattr(result.document, "document_id", "")) == document_id_str:
+            merged.setdefault(result.document.chunk_id, result)
+
+    return list(merged.values())
+
+
 def _format_ask_response(response) -> str:
     """Format AskResponse as a grounded, operator-friendly MCP string."""
     sections: List[str] = []
@@ -536,10 +668,16 @@ def _ingest_substance_payload(substance: Dict[str, Any]) -> tuple[str, int]:
     if not chunks:
         return str(getattr(parsed_substance, "uuid", "unknown")), 0
 
+    display_name = _extract_display_name(substance.get("names"))
     texts = [str(chunk.text) for chunk in chunks]
     embeddings = runtime.embedding_service.embed_batch(texts)
     documents = []
     for chunk, embedding in zip(chunks, embeddings):
+        if display_name:
+            metadata = chunk.metadata_json or {}
+            metadata["canonical_name"] = display_name
+            metadata["substance_name"] = display_name
+            chunk.metadata_json = metadata
         chunk.set_embedding(embedding)
         documents.append(chunk)
     count = runtime.vector_db.upsert_documents(documents)
@@ -694,7 +832,7 @@ async def gsrs_similarity_search(
         if not groups:
             return "No similar substances found."
 
-        name = substance.get("names", [{}])[0].get("name", "substance")
+        name = _substance_display_name(substance, default="substance")
         lines = [f"Found {len(groups)} substance(s) similar to **{name}**:\n"]
         for i, result in enumerate(groups, 1):
             substance_name = result.canonical_name or result.substance_uuid
@@ -987,25 +1125,54 @@ async def gsrs_aggregation(
 
         rewrite_result = rewriter.rewrite(query)
         tool.bind(query_type=rewrite_result.intent)
-        queries = [rewrite_result.canonical_query] + rewrite_result.rewrites
+        queries = [query] + rewrite_result.rewrites
         applied_filters = filter_builder.build(inferred_filters=rewrite_result.filters)
 
+        pipeline = runtime.query_pipeline
         all_candidates: Dict[str, Any] = {}
-        for candidate_query in queries:
-            embedding = runtime.embedding_service.embed(candidate_query)
-            results = runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=applied_filters)
-            for result in results:
-                chunk_id = result.document.chunk_id
-                if chunk_id not in all_candidates:
-                    all_candidates[chunk_id] = result
+        if pipeline and all(
+            hasattr(pipeline, attr)
+            for attr in ("hybrid_retriever", "identifier_router", "reranker")
+        ):
+            route_result = pipeline.identifier_router.route(query, top_k=top_k)
+            if route_result is not None and route_result.results:
+                for result_item in route_result.results:
+                    all_candidates[result_item.document.chunk_id] = result_item
+            else:
+                candidates = pipeline.hybrid_retriever.retrieve(
+                    queries=queries,
+                    filters=applied_filters,
+                )
+                reranked = pipeline.reranker.rerank(
+                    candidates=candidates,
+                    query=query,
+                    rewritten_queries=rewrite_result.rewrites,
+                    filters=applied_filters,
+                )
+                for result_item in reranked:
+                    all_candidates[result_item.document.chunk_id] = result_item
+        else:
+            for candidate_query in queries:
+                embedding = runtime.embedding_service.embed(candidate_query)
+                results = runtime.vector_db.similarity_search(embedding, top_k=top_k, filters=applied_filters)
+                for result_item in results:
+                    chunk_id = result_item.document.chunk_id
+                    if chunk_id not in all_candidates:
+                        all_candidates[chunk_id] = result_item
 
         if not all_candidates:
             tool.finish("abstained", result_count=0, citation_count=0)
             return f"No data found for aggregation query: **{query}**."
 
         sorted_candidates = sorted(all_candidates.values(), key=lambda item: item.score, reverse=True)[:top_k]
-        result = aggregator.aggregate(sorted_candidates, query, intent=rewrite_result.intent)
-        tool.finish("success", result_count=len(sorted_candidates), citation_count=0)
+        expanded_candidates = _expand_aggregation_candidates(
+            sorted_candidates,
+            query=query,
+            rewriter=rewriter,
+            top_k=top_k,
+        )
+        result = aggregator.aggregate(expanded_candidates, query, intent=rewrite_result.intent)
+        tool.finish("success", result_count=len(expanded_candidates), citation_count=0)
 
         if aggregation_type == "count":
             return f"**{result.substance_name}** has **{result.total_count}** {result.aggregation_type}."
@@ -1170,7 +1337,7 @@ async def gsrs_api_search(
     lines = [f"Found **{total}** result(s) for **{query}** (page {page}):\n"]
     for i, sub in enumerate(results, 1):
         uuid = sub.get("uuid", "?")
-        name = sub.get("_name", "?")
+        name = _substance_display_name(sub)
         sclass = sub.get("substanceClass", "")
         lines.append(f"{i}. **{name}** ({sclass})")
         lines.append(f"   UUID: `{uuid}`")
@@ -1232,7 +1399,7 @@ async def gsrs_api_structure_search(
     lines = [f"Found **{len(results)}** structure match(es) ({search_type}):\n"]
     for i, sub in enumerate(results, 1):
         uuid = sub.get("uuid", "?")
-        name = sub.get("_name", "?")
+        name = _substance_display_name(sub)
         sclass = sub.get("substanceClass", "")
         lines.append(f"{i}. **{name}** ({sclass})")
         lines.append(f"   UUID: `{uuid}`")
@@ -1297,7 +1464,7 @@ async def gsrs_api_sequence_search(
     lines = [f"Found **{len(results)}** sequence match(es) ({search_type}, {sequence_type}):\n"]
     for i, sub in enumerate(results, 1):
         uuid = sub.get("uuid", "?")
-        name = sub.get("_name", "?")
+        name = _substance_display_name(sub)
         sclass = sub.get("substanceClass", "")
         lines.append(f"{i}. **{name}** ({sclass})")
         lines.append(f"   UUID: `{uuid}`")

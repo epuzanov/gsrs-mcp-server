@@ -267,6 +267,10 @@ class RerankerService:
                     identifiers.append(code)
 
         # Check metadata_json for code-related fields
+        direct_code = metadata.get("code")
+        if direct_code:
+            identifiers.append(str(direct_code))
+
         for key in [
             "uuid",
             "approvalID",
@@ -299,7 +303,7 @@ class RerankerService:
         names = []
 
         # Canonical name
-        canonical = metadata.get("canonical_name")
+        canonical = metadata.get("canonical_name") or metadata.get("entity_name") or metadata.get("substance_name")
         if canonical:
             names.append(str(canonical))
 

@@ -476,10 +476,23 @@ class ChromaDatabase(VectorDatabase):
 
         # Build search text from text + metadata
         search_parts = [text_lower]
-        for key in ["canonical_name", "chunk_type", "section"]:
+        for key in [
+            "canonical_name",
+            "entity_name",
+            "substance_name",
+            "chunk_type",
+            "section",
+            "code_system",
+            "code",
+            "code_text",
+        ]:
             val = metadata.get(key) or metadata_json.get(key)
             if val:
                 search_parts.append(str(val).lower())
+
+        exact_terms = metadata_json.get("exact_match_terms", [])
+        if isinstance(exact_terms, list):
+            search_parts.extend(str(term).lower() for term in exact_terms)
 
         search_text = " ".join(search_parts)
 
@@ -670,6 +683,5 @@ class ChromaDatabase(VectorDatabase):
             return 1.0 if total_score > 0 else 0.0
 
         return total_score / total_weight if total_weight > 0 else 0.0
-
 
 

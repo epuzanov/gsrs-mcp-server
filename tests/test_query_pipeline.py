@@ -91,6 +91,21 @@ class TestQueryRewriteService(unittest.TestCase):
         # Should include substance name
         self.assertTrue(any("ibuprofen" in r.lower() for r in result.rewrites))
 
+    def test_aggregation_rewrites_codes_has_substance(self):
+        """Non-standard 'codes has X' phrasing should still isolate the substance."""
+        result = self.service.rewrite("How many codes has ibuprofen?")
+
+        self.assertEqual(result.intent, "aggregation_identifiers")
+        self.assertIn("identifier", result.filters["sections"])
+        self.assertTrue(any(r.lower() == "codes ibuprofen" for r in result.rewrites))
+
+    def test_aggregation_rewrites_names_has_substance(self):
+        """Non-standard 'names has X' phrasing should still isolate the substance."""
+        result = self.service.rewrite("How many names has ibuprofen?")
+
+        self.assertEqual(result.intent, "aggregation_names")
+        self.assertTrue(any(r.lower() == "names ibuprofen" for r in result.rewrites))
+
 
 class TestAggregationService(unittest.TestCase):
     """Unit tests for AggregationService."""
@@ -126,6 +141,47 @@ class TestAggregationService(unittest.TestCase):
         self.assertEqual(result.aggregation_type, "identifiers")
         self.assertEqual(result.substance_name, "Ibuprofen")
 
+    def test_extract_codes_from_chunker_identifier_metadata(self):
+        """Identifier chunks emitted by the GSRS chunker should aggregate directly."""
+        candidates = [
+            DBQueryResult(
+                self._make_doc(
+                    "Primary CAS identifier: 15687-27-1.",
+                    {
+                        "entity_name": "Ibuprofen",
+                        "section": "identifier",
+                        "entity_type": "identifier",
+                        "code_system": "CAS",
+                        "code": "15687-27-1",
+                        "code_type": "PRIMARY",
+                    },
+                    section="identifier",
+                ),
+                0.9,
+            ),
+            DBQueryResult(
+                self._make_doc(
+                    "Primary UNII identifier: XKG6425636.",
+                    {
+                        "entity_name": "Ibuprofen",
+                        "section": "identifier",
+                        "entity_type": "identifier",
+                        "code_system": "UNII",
+                        "code": "XKG6425636",
+                        "code_type": "PRIMARY",
+                    },
+                    section="identifier",
+                ),
+                0.88,
+            ),
+        ]
+
+        result = self.service.aggregate(candidates, "How many codes has Ibuprofen?", "aggregation_identifiers")
+
+        self.assertEqual(result.substance_name, "Ibuprofen")
+        self.assertEqual(result.total_count, 2)
+        self.assertEqual({item["type"] for item in result.items}, {"CAS", "UNII"})
+
     def test_extract_configured_code_systems_from_reliable_code_maps(self):
         """Configured identifier systems should be surfaced from reliable/all code maps."""
         service = AggregationService(
@@ -159,6 +215,79 @@ class TestAggregationService(unittest.TestCase):
         result = self.service.aggregate(candidates, "List all names of Ibuprofen", "aggregation_names")
         self.assertEqual(result.total_count, 4)  # canonical + 3 names
         self.assertEqual(result.aggregation_type, "names")
+
+    def test_display_name_is_used_as_substance_name(self):
+        """The GSRS display name should be used as the substance display label."""
+        metadata = {
+            "canonical_name": "Fallback Ibuprofen",
+            "entity_name": "Entity Ibuprofen",
+            "names": [
+                {"name": "Systematic Ibuprofen", "type": "Systematic name"},
+                {"name": "Ibuprofen Display", "type": "Common name", "display_name": True},
+            ],
+        }
+        doc = self._make_doc("Ibuprofen names section", metadata)
+        candidates = [DBQueryResult(doc, 0.9)]
+
+        result = self.service.aggregate(candidates, "List all names of Ibuprofen", "aggregation_names")
+
+        self.assertEqual(result.substance_name, "Ibuprofen Display")
+
+    def test_name_count_uses_chunker_name_count_not_search_terms(self):
+        """Chunker exact_match_terms are search aliases, not authoritative name counts."""
+        candidates = [
+            DBQueryResult(
+                self._make_doc(
+                    "Core names summary.",
+                    {
+                        "entity_name": "Ibuprofen",
+                        "section": "core_names",
+                        "group_type": "core_names",
+                        "entity_type": "name",
+                        "name_count": 54,
+                        "exact_match_terms": [f"Alias {i}" for i in range(128)],
+                    },
+                    section="core_names",
+                ),
+                1.0,
+            ),
+            DBQueryResult(
+                self._make_doc(
+                    "English COMMON names: name batch 1.",
+                    {
+                        "entity_name": "Ibuprofen",
+                        "section": "name_batch",
+                        "group_type": "name_batch",
+                        "entity_type": "name",
+                        "name_count": 30,
+                        "exact_match_terms": [f"Name {i}" for i in range(30)],
+                    },
+                    section="name_batch",
+                ),
+                0.9,
+            ),
+            DBQueryResult(
+                self._make_doc(
+                    "English TRADE names: name batch 2.",
+                    {
+                        "entity_name": "Ibuprofen",
+                        "section": "name_batch",
+                        "group_type": "name_batch",
+                        "entity_type": "name",
+                        "name_count": 24,
+                        "exact_match_terms": [f"Name {i}" for i in range(30, 54)],
+                    },
+                    section="name_batch",
+                ),
+                0.89,
+            ),
+        ]
+
+        result = self.service.aggregate(candidates, "How many names has Ibuprofen?", "aggregation_names")
+
+        self.assertEqual(result.substance_name, "Ibuprofen")
+        self.assertEqual(result.total_count, 54)
+        self.assertIn("54", result.raw_text_summary)
 
     def test_empty_aggregation(self):
         """Test aggregation with no data."""
@@ -1196,3 +1325,40 @@ class TestSimilarSubstanceSearch(unittest.TestCase):
         from app.main import _extract_search_criteria
         criteria = _extract_search_criteria({})
         self.assertEqual(criteria, {})
+
+    def test_extract_search_criteria_prefers_display_name(self):
+        """Similarity search canonical name should use the GSRS display name."""
+        from app.main import _extract_search_criteria
+
+        criteria = _extract_search_criteria({
+            "names": [
+                {"name": "Systematic Ibuprofen", "type": "Systematic name"},
+                {"name": "Ibuprofen Display", "type": "Common name", "displayName": True},
+            ]
+        })
+
+        self.assertEqual(criteria["canonical_name"], "Ibuprofen Display")
+
+    def test_group_by_substance_prefers_display_name(self):
+        """Grouped similarity results should display the GSRS display name."""
+        from app.main import _group_by_substance
+
+        document = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=uuid4(),
+            section="names",
+            text="Names for ibuprofen.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "canonical_name": "Fallback Ibuprofen",
+                "names": [
+                    {"name": "Systematic Ibuprofen", "type": "Systematic name"},
+                    {"name": "Ibuprofen Display", "type": "Common name", "displayName": True},
+                ],
+            },
+        )
+
+        grouped = _group_by_substance([DBQueryResult(document, 0.9)])
+
+        self.assertEqual(grouped[0].canonical_name, "Ibuprofen Display")

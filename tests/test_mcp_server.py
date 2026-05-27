@@ -527,6 +527,80 @@ class TestToolBehavior(unittest.TestCase):
 
         self.assertIn("No similar substances found", output)
 
+    def test_similarity_search_uses_display_name_for_query_and_results(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        document = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=uuid4(),
+            section="names",
+            text="Names for ibuprofen.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "canonical_name": "Fallback Result",
+                "names": [
+                    {"name": "Result Systematic", "type": "Systematic name"},
+                    {"name": "Result Display", "displayName": True},
+                ],
+            },
+        )
+        fake_runtime.vector_db = SimpleNamespace(
+            search_by_example=lambda example, top_k=10, mode="contains": [
+                SimpleNamespace(document=document, score=0.93)
+            ]
+        )
+        payload = json.dumps({
+            "uuid": "12345678-1234-1234-1234-123456789abc",
+            "names": [
+                {"name": "Query Systematic", "type": "Systematic name"},
+                {"name": "Query Display", "display_name": True},
+            ],
+        })
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(main.gsrs_similarity_search(payload))
+
+        self.assertIn("similar to **Query Display**", output)
+        self.assertIn("**Result Display**", output)
+
+    def test_api_search_tools_use_display_name(self):
+        from app import main
+
+        result = {
+            "uuid": "12345678-1234-1234-1234-123456789abc",
+            "_name": "Fallback Name",
+            "substanceClass": "chemical",
+            "names": [
+                {"name": "Systematic Name", "type": "Systematic name"},
+                {"name": "Display Name", "displayName": True},
+            ],
+        }
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        fake_runtime.gsrs_api = SimpleNamespace(
+            text_search=lambda query, page=1, size=20, fields=None: {
+                "content": [result],
+                "total": 1,
+            },
+            structure_search=lambda structure=None, search_type="exact", cutoff=0.8, size=20: {
+                "content": [result],
+            },
+            sequence_search=lambda sequence, search_type="GLOBAL", sequence_type="protein", cutoff=0.95, size=20: {
+                "content": [result],
+            },
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            text_output = asyncio.run(main.gsrs_api_search("ibuprofen"))
+            structure_output = asyncio.run(main.gsrs_api_structure_search("CCO"))
+            sequence_output = asyncio.run(main.gsrs_api_sequence_search("MVLSP"))
+
+        self.assertIn("**Display Name**", text_output)
+        self.assertIn("**Display Name**", structure_output)
+        self.assertIn("**Display Name**", sequence_output)
+        self.assertNotIn("**Fallback Name**", text_output)
+
     def test_gsrs_ask_redirects_gsrs_json_to_similarity_search(self):
         from app import main
 
@@ -663,6 +737,140 @@ class TestToolBehavior(unittest.TestCase):
         self.assertIn("Ibuprofen", output)
         self.assertIn("1", output)
         self.assertIn("identifiers", output)
+
+    def test_gsrs_aggregation_expands_matched_substance_chunks(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        substance_id = uuid4()
+        overview = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=substance_id,
+            section="overview",
+            text="Ibuprofen is a chemical substance.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "entity_name": "Ibuprofen",
+                "document_id": str(substance_id),
+                "section": "overview",
+            },
+        )
+        cas_identifier = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=substance_id,
+            section="identifier",
+            text="Primary CAS identifier: 15687-27-1.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "entity_name": "Ibuprofen",
+                "document_id": str(substance_id),
+                "section": "identifier",
+                "entity_type": "identifier",
+                "code_system": "CAS",
+                "code": "15687-27-1",
+            },
+        )
+        unii_identifier = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=substance_id,
+            section="identifier",
+            text="Primary UNII identifier: XKG6425636.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "entity_name": "Ibuprofen",
+                "document_id": str(substance_id),
+                "section": "identifier",
+                "entity_type": "identifier",
+                "code_system": "UNII",
+                "code": "XKG6425636",
+            },
+        )
+        fake_runtime.vector_db = SimpleNamespace(
+            similarity_search=lambda embedding, top_k=10, filters=None: [
+                SimpleNamespace(document=overview, score=0.99)
+            ],
+            search_by_example=lambda example, top_k=20, mode="match": [
+                SimpleNamespace(document=overview, score=1.0),
+                SimpleNamespace(document=cas_identifier, score=1.0),
+                SimpleNamespace(document=unii_identifier, score=1.0),
+            ],
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(
+                main.gsrs_aggregation(
+                    "How many codes has ibuprofen?",
+                    aggregation_type="count",
+                )
+            )
+
+        self.assertIn("Ibuprofen", output)
+        self.assertIn("2", output)
+        self.assertIn("identifiers", output)
+
+    def test_gsrs_aggregation_keeps_exact_name_substance_separate_from_contains_match(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        aspirin_id = uuid4()
+        copper_dimer_id = uuid4()
+        aspirin_names = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=aspirin_id,
+            section="core_names",
+            text="Core names: Aspirin.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "entity_name": "Aspirin",
+                "section": "core_names",
+                "group_type": "core_names",
+                "entity_type": "name",
+                "name_count": 64,
+                "exact_match_terms": ["Aspirin"],
+            },
+        )
+        copper_dimer_names = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=copper_dimer_id,
+            section="core_names",
+            text="Core names: Aspirin copper dimer.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "entity_name": "Aspirin copper dimer",
+                "section": "core_names",
+                "group_type": "core_names",
+                "entity_type": "name",
+                "name_count": 5,
+                "exact_match_terms": ["Aspirin copper dimer"],
+            },
+        )
+        fake_runtime.vector_db = SimpleNamespace(
+            similarity_search=lambda embedding, top_k=10, filters=None: [
+                SimpleNamespace(document=copper_dimer_names, score=0.99),
+                SimpleNamespace(document=aspirin_names, score=0.98),
+            ],
+            search_by_example=lambda example, top_k=20, mode="match": [
+                SimpleNamespace(document=copper_dimer_names, score=1.0),
+                SimpleNamespace(document=aspirin_names, score=1.0),
+            ],
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(
+                main.gsrs_aggregation(
+                    "How many names has aspirin?",
+                    aggregation_type="count",
+                )
+            )
+
+        self.assertIn("**Aspirin**", output)
+        self.assertIn("**64** names", output)
+        self.assertNotIn("Aspirin copper dimer", output)
 
 
 class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):

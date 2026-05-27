@@ -112,10 +112,24 @@ class LexicalRetriever:
         parts = [doc.text]
 
         # Add metadata fields that are useful for lexical matching
-        for key in ["canonical_name", "chunk_type", "section", "source_url"]:
+        for key in [
+            "canonical_name",
+            "entity_name",
+            "substance_name",
+            "chunk_type",
+            "section",
+            "source_url",
+            "code_system",
+            "code",
+            "code_text",
+        ]:
             val = metadata.get(key)
             if val:
                 parts.append(str(val))
+
+        exact_terms = metadata.get("exact_match_terms", [])
+        if isinstance(exact_terms, list):
+            parts.extend(str(term) for term in exact_terms)
 
         # Add any names from metadata
         names = metadata.get("names", [])
