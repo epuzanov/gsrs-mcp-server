@@ -1096,7 +1096,7 @@ async def gsrs_statistics() -> str:
 @mcp.tool()
 async def gsrs_aggregation(
     query: str,
-    aggregation_type: Literal["count", "names", "identifiers", "relationships", "general"] = "count",
+    aggregation_type: Literal["count", "codes", "names", "identifiers", "classifications", "relationships", "general"] = "count",
     top_k: int = 50,
 ) -> str:
     """Aggregated substance queries — counts, lists, summaries.
@@ -1106,7 +1106,7 @@ async def gsrs_aggregation(
 
     Args:
         query: User question describing the aggregation.
-        aggregation_type: Type of aggregation — count | names | identifiers | relationships | general.
+        aggregation_type: Type of aggregation — count | codes | names | identifiers | classifications | relationships | general.
         top_k: Number of candidate chunks to retrieve.
 
     Returns:
@@ -1175,7 +1175,8 @@ async def gsrs_aggregation(
         tool.finish("success", result_count=len(expanded_candidates), citation_count=0)
 
         if aggregation_type == "count":
-            return f"**{result.substance_name}** has **{result.total_count}** {result.aggregation_type}."
+            aggregation_label = result.display_aggregation_type or result.aggregation_type
+            return f"**{result.substance_name}** has **{result.total_count}** {aggregation_label}."
 
         return result.raw_text_summary
     except Exception as exc:

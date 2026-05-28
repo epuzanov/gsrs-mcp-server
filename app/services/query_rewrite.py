@@ -86,7 +86,11 @@ class QueryRewriteService:
         # Check for aggregation/count queries first (higher priority)
         if any(kw in query_lower for kw in _AGGREGATION_KEYWORDS):
             # e.g., "How many identifiers has Ibuprofen?"
-            if has_identifier_reference or any(kw in query_lower for kw in ["code", "identifier", "id"]):
+            if any(kw in query_lower for kw in ["classification", "classifications"]):
+                return "aggregation_classifications"
+            if any(kw in query_lower for kw in ["code", "codes"]):
+                return "aggregation_codes"
+            if has_identifier_reference or any(kw in query_lower for kw in ["identifier", "id"]):
                 return "aggregation_identifiers"
             if any(kw in query_lower for kw in ["name", "names", "called", "synonym"]):
                 return "aggregation_names"
@@ -143,6 +147,8 @@ class QueryRewriteService:
         if self._contains_identifier_reference(query) or any(w in query_lower for w in ["code", "identifier"]):
             sections.append("codes")
             sections.append("identifier")
+        if any(w in query_lower for w in ["code", "codes", "classification", "classifications"]):
+            sections.append("classification")
         if any(w in query_lower for w in ["structure", "molecular", "formula", "smiles", "inchi"]):
             sections.append("structure")
         if any(w in query_lower for w in ["property", "physical", "molecular weight", "melting", "boiling"]):
@@ -151,7 +157,6 @@ class QueryRewriteService:
             sections.append("activity")
         if any(w in query_lower for w in ["reference", "source", "citation"]):
             sections.append("references")
-
         if sections:
             filters["sections"] = sections
 
@@ -164,7 +169,16 @@ class QueryRewriteService:
         if intent.startswith("aggregation_"):
             # Aggregation queries need all relevant chunks from the substance
             substance = self._extract_substance_name(query_lower)
-            if "identifier" in intent:
+            if "classification" in intent:
+                rewrites.append(f"classifications {substance}")
+                rewrites.append(f"{substance} all classifications")
+                rewrites.append(f"{substance} classification codes")
+            elif "code" in intent:
+                rewrites.append(f"codes {substance}")
+                rewrites.append(f"{substance} all codes")
+                rewrites.append(f"{substance} codes list")
+                rewrites.append(f"all codes for {substance}")
+            elif "identifier" in intent:
                 rewrites.append(f"codes {substance}")
                 rewrites.append(f"{substance} all codes identifiers")
                 rewrites.append(f"{substance} identifiers list")
@@ -252,11 +266,14 @@ class QueryRewriteService:
             r"^how\s+many\s+(?:codes?|identifiers?|ids?)\s+(?:does|do)\s+(.+?)\s+(?:have|has)$",
             r"^how\s+many\s+(?:codes?|identifiers?|ids?)\s+has\s+(.+)$",
             r"^how\s+many\s+(?:codes?|identifiers?|ids?)\s+(?:for|of)\s+(.+)$",
-            r"^how\s+many\s+(?:names?|synonyms?)\s+(?:does|do)\s+(.+?)\s+(?:have|has)$",
-            r"^how\s+many\s+(?:names?|synonyms?)\s+has\s+(.+)$",
-            r"^how\s+many\s+(?:names?|synonyms?)\s+(?:for|of)\s+(.+)$",
-            r"^(?:list|enumerate|collect|gather)\s+(?:all\s+)?(?:codes?|identifiers?|ids?|names?|synonyms?|relationships?)\s+(?:for|of)\s+(.+)$",
-            r"^count\s+(?:the\s+)?(?:codes?|identifiers?|ids?|names?|synonyms?|relationships?)\s+(?:for|of)\s+(.+)$",
+            r"^how\s+many\s+(?:[a-z][a-z-]*\s+)*(?:names?|synonyms?)\s+(?:does|do)\s+(.+?)\s+(?:have|has)$",
+            r"^how\s+many\s+(?:[a-z][a-z-]*\s+)*(?:names?|synonyms?)\s+has\s+(.+)$",
+            r"^how\s+many\s+(?:[a-z][a-z-]*\s+)*(?:names?|synonyms?)\s+(?:for|of)\s+(.+)$",
+            r"^how\s+many\s+(?:classifications?|classification\s+codes?)\s+(?:does|do)\s+(.+?)\s+(?:have|has)$",
+            r"^how\s+many\s+(?:classifications?|classification\s+codes?)\s+has\s+(.+)$",
+            r"^how\s+many\s+(?:classifications?|classification\s+codes?)\s+(?:for|of)\s+(.+)$",
+            r"^(?:list|enumerate|collect|gather)\s+(?:all\s+)?(?:codes?|identifiers?|ids?|names?|synonyms?|classifications?|classification\s+codes?|relationships?)\s+(?:for|of)\s+(.+)$",
+            r"^count\s+(?:the\s+)?(?:codes?|identifiers?|ids?|names?|synonyms?|classifications?|classification\s+codes?|relationships?)\s+(?:for|of)\s+(.+)$",
         ]
         for pattern in aggregation_patterns:
             match = re.match(pattern, query_text)

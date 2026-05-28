@@ -809,7 +809,7 @@ class TestToolBehavior(unittest.TestCase):
 
         self.assertIn("Ibuprofen", output)
         self.assertIn("2", output)
-        self.assertIn("identifiers", output)
+        self.assertIn("codes", output)
 
     def test_gsrs_aggregation_keeps_exact_name_substance_separate_from_contains_match(self):
         from app import main
@@ -871,6 +871,151 @@ class TestToolBehavior(unittest.TestCase):
         self.assertIn("**Aspirin**", output)
         self.assertIn("**64** names", output)
         self.assertNotIn("Aspirin copper dimer", output)
+
+    def test_gsrs_aggregation_language_filtered_names_excludes_other_substances_and_languages(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        aspirin_id = uuid4()
+        copper_dimer_id = uuid4()
+        aspirin_core = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=aspirin_id,
+            section="core_names",
+            text="Core names: Aspirin.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "entity_name": "Aspirin",
+                "section": "core_names",
+                "group_type": "core_names",
+                "entity_type": "name",
+                "name_count": 64,
+                "exact_match_terms": ["Aspirin"],
+            },
+        )
+        aspirin_english = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=aspirin_id,
+            section="name_batch",
+            text="English COMMON names: Aspirin.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "entity_name": "Aspirin",
+                "section": "name_batch",
+                "group_type": "name_batch",
+                "entity_type": "name",
+                "name_count": 64,
+                "languages": ["en"],
+                "exact_match_terms": ["Aspirin"],
+            },
+        )
+        copper_dimer_german = VectorDocument(
+            id=str(uuid4()),
+            chunk_id=f"chunk_{uuid4()}",
+            document_id=copper_dimer_id,
+            section="name_batch",
+            text="German names: Aspirin copper dimer DE.",
+            embedding=[0.0] * settings.embedding_dimension,
+            metadata_json={
+                "entity_name": "Aspirin copper dimer",
+                "section": "name_batch",
+                "group_type": "name_batch",
+                "entity_type": "name",
+                "name_count": 5,
+                "languages": ["de"],
+                "exact_match_terms": ["Aspirin copper dimer DE"],
+            },
+        )
+        fake_runtime.vector_db = SimpleNamespace(
+            similarity_search=lambda embedding, top_k=10, filters=None: [
+                SimpleNamespace(document=copper_dimer_german, score=0.99),
+                SimpleNamespace(document=aspirin_core, score=0.98),
+            ],
+            search_by_example=lambda example, top_k=20, mode="match": [
+                SimpleNamespace(document=aspirin_core, score=1.0),
+                SimpleNamespace(document=aspirin_english, score=1.0),
+                SimpleNamespace(document=copper_dimer_german, score=1.0),
+            ],
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(
+                main.gsrs_aggregation(
+                    "How many German names has aspirin?",
+                    aggregation_type="count",
+                )
+            )
+
+        self.assertEqual(output, "**Aspirin** has **0** **German** names.")
+
+    def test_gsrs_aggregation_classifications_excludes_contains_match(self):
+        from app import main
+
+        fake_runtime = FakeRuntime(ready=True, retrieval_ready=True)
+        aspirin_id = uuid4()
+        anhydride_id = uuid4()
+        aspirin_classifications = [
+            VectorDocument(
+                id=str(uuid4()),
+                chunk_id=f"chunk_{uuid4()}",
+                document_id=aspirin_id,
+                section="classification",
+                text=f"Classification TEST: ASP-{index}.",
+                embedding=[0.0] * settings.embedding_dimension,
+                metadata_json={
+                    "entity_name": "Aspirin",
+                    "section": "classification",
+                    "group_type": "classification",
+                    "entity_type": "classification",
+                    "code_system": "TEST",
+                    "code": f"ASP-{index}",
+                    "exact_match_terms": ["Aspirin", f"ASP-{index}"],
+                },
+            )
+            for index in range(60)
+        ]
+        anhydride_classifications = [
+            VectorDocument(
+                id=str(uuid4()),
+                chunk_id=f"chunk_{uuid4()}",
+                document_id=anhydride_id,
+                section="classification",
+                text=f"Classification TEST: ANH-{index}.",
+                embedding=[0.0] * settings.embedding_dimension,
+                metadata_json={
+                    "entity_name": "ASPIRIN ANHYDRIDE",
+                    "section": "classification",
+                    "group_type": "classification",
+                    "entity_type": "classification",
+                    "code_system": "TEST",
+                    "code": f"ANH-{index}",
+                    "exact_match_terms": ["ASPIRIN ANHYDRIDE", f"ANH-{index}"],
+                },
+            )
+            for index in range(19)
+        ]
+        fake_runtime.vector_db = SimpleNamespace(
+            similarity_search=lambda embedding, top_k=10, filters=None: [
+                SimpleNamespace(document=anhydride_classifications[0], score=0.99),
+                SimpleNamespace(document=aspirin_classifications[0], score=0.98),
+            ],
+            search_by_example=lambda example, top_k=200, mode="match": [
+                *(SimpleNamespace(document=doc, score=1.0) for doc in aspirin_classifications),
+                *(SimpleNamespace(document=doc, score=1.0) for doc in anhydride_classifications),
+            ],
+        )
+
+        with patch.object(main, "runtime", fake_runtime):
+            output = asyncio.run(
+                main.gsrs_aggregation(
+                    "How many classifications has aspirin?",
+                    aggregation_type="count",
+                )
+            )
+
+        self.assertEqual(output, "**Aspirin** has **60** classifications.")
 
 
 class TestMCPTransportSmoke(unittest.IsolatedAsyncioTestCase):

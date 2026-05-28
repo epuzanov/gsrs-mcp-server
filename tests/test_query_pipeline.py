@@ -86,7 +86,7 @@ class TestQueryRewriteService(unittest.TestCase):
     def test_aggregation_rewrites(self):
         """Test that aggregation queries generate appropriate rewrites."""
         result = self.service.rewrite("How many codes does Ibuprofen have?")
-        self.assertEqual(result.intent, "aggregation_identifiers")
+        self.assertEqual(result.intent, "aggregation_codes")
         self.assertTrue(len(result.rewrites) >= 2)
         # Should include substance name
         self.assertTrue(any("ibuprofen" in r.lower() for r in result.rewrites))
@@ -95,8 +95,9 @@ class TestQueryRewriteService(unittest.TestCase):
         """Non-standard 'codes has X' phrasing should still isolate the substance."""
         result = self.service.rewrite("How many codes has ibuprofen?")
 
-        self.assertEqual(result.intent, "aggregation_identifiers")
+        self.assertEqual(result.intent, "aggregation_codes")
         self.assertIn("identifier", result.filters["sections"])
+        self.assertIn("classification", result.filters["sections"])
         self.assertTrue(any(r.lower() == "codes ibuprofen" for r in result.rewrites))
 
     def test_aggregation_rewrites_names_has_substance(self):
@@ -105,6 +106,21 @@ class TestQueryRewriteService(unittest.TestCase):
 
         self.assertEqual(result.intent, "aggregation_names")
         self.assertTrue(any(r.lower() == "names ibuprofen" for r in result.rewrites))
+
+    def test_aggregation_rewrites_language_names_has_substance(self):
+        """Language-qualified name counts should still isolate the substance."""
+        result = self.service.rewrite("How many German names has ibuprofen?")
+
+        self.assertEqual(result.intent, "aggregation_names")
+        self.assertTrue(any(r.lower() == "names ibuprofen" for r in result.rewrites))
+
+    def test_aggregation_rewrites_classifications_has_substance(self):
+        """Classification count queries should isolate the substance."""
+        result = self.service.rewrite("How many classifications has aspirin?")
+
+        self.assertEqual(result.intent, "aggregation_classifications")
+        self.assertIn("classification", result.filters["sections"])
+        self.assertTrue(any(r.lower() == "classifications aspirin" for r in result.rewrites))
 
 
 class TestAggregationService(unittest.TestCase):
@@ -176,11 +192,57 @@ class TestAggregationService(unittest.TestCase):
             ),
         ]
 
-        result = self.service.aggregate(candidates, "How many codes has Ibuprofen?", "aggregation_identifiers")
+        result = self.service.aggregate(candidates, "How many codes has Ibuprofen?", "aggregation_codes")
 
         self.assertEqual(result.substance_name, "Ibuprofen")
         self.assertEqual(result.total_count, 2)
+        self.assertEqual(result.aggregation_type, "codes")
         self.assertEqual({item["type"] for item in result.items}, {"CAS", "UNII"})
+
+    def test_codes_identifiers_and_classifications_follow_is_classification_rule(self):
+        """Codes include all codes; identifiers/classifications split by classification flag."""
+        candidates = [
+            DBQueryResult(
+                self._make_doc(
+                    "Primary CAS identifier: 50-78-2.",
+                    {
+                        "entity_name": "Aspirin",
+                        "section": "identifier",
+                        "entity_type": "identifier",
+                        "code_system": "CAS",
+                        "code": "50-78-2",
+                        "_isClassification": False,
+                    },
+                    section="identifier",
+                ),
+                0.9,
+            ),
+            DBQueryResult(
+                self._make_doc(
+                    "Classification WHO-ATC: N02BA01.",
+                    {
+                        "entity_name": "Aspirin",
+                        "section": "classification",
+                        "entity_type": "classification",
+                        "code_system": "WHO-ATC",
+                        "code": "N02BA01",
+                        "_isClassification": True,
+                    },
+                    section="classification",
+                ),
+                0.88,
+            ),
+        ]
+
+        all_codes = self.service.aggregate(candidates, "How many codes has Aspirin?", "aggregation_codes")
+        identifiers = self.service.aggregate(candidates, "How many identifiers has Aspirin?", "aggregation_identifiers")
+        classifications = self.service.aggregate(candidates, "How many classifications has Aspirin?", "aggregation_classifications")
+
+        self.assertEqual(all_codes.total_count, 2)
+        self.assertEqual(identifiers.total_count, 1)
+        self.assertEqual(identifiers.items[0]["type"], "CAS")
+        self.assertEqual(classifications.total_count, 1)
+        self.assertEqual(classifications.items[0]["type"], "WHO-ATC")
 
     def test_extract_configured_code_systems_from_reliable_code_maps(self):
         """Configured identifier systems should be surfaced from reliable/all code maps."""
@@ -288,6 +350,135 @@ class TestAggregationService(unittest.TestCase):
         self.assertEqual(result.substance_name, "Ibuprofen")
         self.assertEqual(result.total_count, 54)
         self.assertIn("54", result.raw_text_summary)
+
+    def test_language_filtered_name_count_returns_zero_when_language_absent(self):
+        """Language-qualified name counts should not use total core name_count."""
+        candidates = [
+            DBQueryResult(
+                self._make_doc(
+                    "Core names: Aspirin.",
+                    {
+                        "entity_name": "Aspirin",
+                        "section": "core_names",
+                        "group_type": "core_names",
+                        "entity_type": "name",
+                        "name_count": 64,
+                        "exact_match_terms": ["Aspirin"],
+                    },
+                    section="core_names",
+                ),
+                1.0,
+            ),
+            DBQueryResult(
+                self._make_doc(
+                    "English COMMON names: Aspirin.",
+                    {
+                        "entity_name": "Aspirin",
+                        "section": "name_batch",
+                        "group_type": "name_batch",
+                        "entity_type": "name",
+                        "name_count": 64,
+                        "languages": ["en"],
+                        "exact_match_terms": ["Aspirin"],
+                    },
+                    section="name_batch",
+                ),
+                0.9,
+            ),
+        ]
+
+        result = self.service.aggregate(candidates, "How many German names has Aspirin?", "aggregation_names")
+
+        self.assertEqual(result.substance_name, "Aspirin")
+        self.assertEqual(result.total_count, 0)
+        self.assertEqual(result.display_aggregation_type, "**German** names")
+
+    def test_language_filtered_name_count_uses_matching_name_batches(self):
+        """Language-qualified name counts should sum only matching language batches."""
+        candidates = [
+            DBQueryResult(
+                self._make_doc(
+                    "German names: Aspirin DE.",
+                    {
+                        "entity_name": "Aspirin",
+                        "section": "name_batch",
+                        "group_type": "name_batch",
+                        "entity_type": "name",
+                        "name_count": 2,
+                        "languages": ["de"],
+                        "exact_match_terms": ["Aspirin DE", "Aspirin Deutsch"],
+                    },
+                    section="name_batch",
+                ),
+                0.9,
+            ),
+            DBQueryResult(
+                self._make_doc(
+                    "English names: Aspirin.",
+                    {
+                        "entity_name": "Aspirin",
+                        "section": "name_batch",
+                        "group_type": "name_batch",
+                        "entity_type": "name",
+                        "name_count": 64,
+                        "languages": ["en"],
+                        "exact_match_terms": ["Aspirin"],
+                    },
+                    section="name_batch",
+                ),
+                0.8,
+            ),
+        ]
+
+        result = self.service.aggregate(candidates, "How many German names has Aspirin?", "aggregation_names")
+
+        self.assertEqual(result.total_count, 2)
+        self.assertEqual([item["name"] for item in result.items], ["Aspirin DE", "Aspirin Deutsch"])
+
+    def test_extract_classifications_from_chunker_classification_metadata(self):
+        """Classification chunks should aggregate separately from identifier codes."""
+        candidates = [
+            DBQueryResult(
+                self._make_doc(
+                    "Classification WHO-ATC: N02BA01.",
+                    {
+                        "entity_name": "Aspirin",
+                        "section": "classification",
+                        "group_type": "classification",
+                        "entity_type": "classification",
+                        "code_system": "WHO-ATC",
+                        "code": "N02BA01",
+                    },
+                    section="classification",
+                ),
+                0.9,
+            ),
+            DBQueryResult(
+                self._make_doc(
+                    "Primary CAS identifier: 50-78-2.",
+                    {
+                        "entity_name": "Aspirin",
+                        "section": "identifier",
+                        "entity_type": "identifier",
+                        "code_system": "CAS",
+                        "code": "50-78-2",
+                    },
+                    section="identifier",
+                ),
+                0.8,
+            ),
+        ]
+
+        result = self.service.aggregate(
+            candidates,
+            "How many classifications has Aspirin?",
+            "aggregation_classifications",
+        )
+
+        self.assertEqual(result.substance_name, "Aspirin")
+        self.assertEqual(result.total_count, 1)
+        self.assertEqual(result.aggregation_type, "classifications")
+        self.assertEqual(result.items[0]["type"], "WHO-ATC")
 
     def test_empty_aggregation(self):
         """Test aggregation with no data."""
