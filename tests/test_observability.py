@@ -29,25 +29,25 @@ class TestObservability(unittest.TestCase):
             exc_info=None,
         )
         record.request_id = "req-1"
-        record.tool_name = "gsrs_ask"
+        record.tool_name = "rag_query"
         record.latency_ms = 12.5
 
         payload = json.loads(formatter.format(record))
         self.assertEqual(payload["request_id"], "req-1")
-        self.assertEqual(payload["tool_name"], "gsrs_ask")
+        self.assertEqual(payload["tool_name"], "rag_query")
         self.assertEqual(payload["latency_ms"], 12.5)
 
     def test_tool_telemetry_records_metrics(self):
         logger = logging.getLogger("test.telemetry")
         metrics = InMemoryMetrics()
-        telemetry = ToolTelemetry.start(logger, metrics, "gsrs_health", "chroma")
+        telemetry = ToolTelemetry.start(logger, metrics, "health", "chroma")
         telemetry.stage("runtime_check", outcome="success", component="vector_db")
         telemetry.finish("success", result_count=0, citation_count=0)
 
         snapshot = metrics.snapshot()
-        self.assertEqual(snapshot["counters"]["tool_calls.gsrs_health"], 1)
-        self.assertEqual(snapshot["counters"]["tool_stage.gsrs_health.runtime_check.success"], 1)
-        self.assertEqual(snapshot["counters"]["tool_outcomes.gsrs_health.success"], 1)
+        self.assertEqual(snapshot["counters"]["tool_calls.health"], 1)
+        self.assertEqual(snapshot["counters"]["tool_stage.health.runtime_check.success"], 1)
+        self.assertEqual(snapshot["counters"]["tool_outcomes.health.success"], 1)
 
     def test_tool_telemetry_preserves_bound_query_type(self):
         logger = logging.getLogger("test.telemetry.query_type")
@@ -62,7 +62,7 @@ class TestObservability(unittest.TestCase):
         telemetry = ToolTelemetry.start(
             logger,
             metrics,
-            "gsrs_ask",
+            "rag_query",
             "chroma",
             query_type="question",
         )

@@ -88,7 +88,7 @@ async def call_http(tool_name: str, arguments: dict[str, Any], url: str, token: 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Call a query-oriented GSRS MCP tool.")
     parser.add_argument("--query", help="Convenience shortcut for tools that accept a query argument.")
-    parser.add_argument("--tool", default="gsrs_ask", help="MCP tool to call, for example gsrs_ask or gsrs_retrieve.")
+    parser.add_argument("--tool", default="rag_query", help="MCP tool to call, for example rag_query or gsrs_get_summary.")
     parser.add_argument(
         "--arguments",
         default="",

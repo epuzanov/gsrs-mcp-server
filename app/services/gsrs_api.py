@@ -193,12 +193,17 @@ class GsrsApiService:
             data = self._filter_public(data)
         return data
 
+    def get_substance(self, identifier: str) -> Optional[Dict[str, Any]]:
+        """Fetch a complete substance document by UUID or approval identifier."""
+        return self.get_substance_by_uuid(identifier.strip())
+
     def text_search(
         self,
         query: str,
         page: int = 1,
         size: int = 20,
         fields: Optional[str] = None,
+        facets: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
         """
         Search substances by free-text query.
@@ -219,6 +224,8 @@ class GsrsApiService:
         }
         if fields:
             params["fields"] = fields
+        if facets:
+            params["facet"] = facets
 
         envelope = self._request_json(
             "GET",
@@ -226,6 +233,55 @@ class GsrsApiService:
             params=params,
         )
         return self._resolve_async_search(envelope, size)
+
+    def parametric_search(
+        self,
+        query: str = "",
+        filters: Optional[Dict[str, Any]] = None,
+        facets: Optional[list[str]] = None,
+        page: int = 1,
+        size: int = 20,
+        fields: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Search substances with GSRS fielded query terms and optional facets."""
+        q = self._build_parametric_query(query=query, filters=filters or {})
+        return self.text_search(
+            q,
+            page=page,
+            size=size,
+            fields=fields,
+            facets=facets,
+        )
+
+    def _build_parametric_query(self, query: str = "", filters: Optional[Dict[str, Any]] = None) -> str:
+        """Build the GSRS search q value from free text plus field:value terms."""
+        terms: list[str] = []
+        if query and query.strip():
+            terms.append(query.strip())
+
+        for field, value in (filters or {}).items():
+            if value is None or value == "":
+                continue
+            if isinstance(value, list):
+                field_terms = [self._field_query_term(field, item) for item in value if item not in (None, "")]
+                if field_terms:
+                    terms.append("(" + " OR ".join(field_terms) + ")")
+            else:
+                terms.append(self._field_query_term(field, value))
+
+        return " AND ".join(terms) if terms else "*"
+
+    @staticmethod
+    def _field_query_term(field: str, value: Any) -> str:
+        """Return one GSRS fielded query term."""
+        raw = str(value).strip()
+        if raw.startswith('"') and raw.endswith('"'):
+            rendered = raw
+        elif any(char.isspace() for char in raw) or any(char in raw for char in ":/"):
+            rendered = f'"{raw}"'
+        else:
+            rendered = raw
+        return f"{field}:{rendered}"
 
     def structure_search(
         self,

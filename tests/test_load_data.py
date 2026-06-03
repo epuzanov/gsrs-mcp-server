@@ -285,13 +285,13 @@ class TestMCPToolClient(unittest.IsolatedAsyncioTestCase):
                 return FakeResult()
 
         client._session = FakeSession()
-        text = await client.call_tool_text("gsrs_ingest", {"substance_json": "{}"})
+        text = await client.call_tool_text("rag_ingest", {"substance_json": "{}"})
 
         self.assertEqual(text, "Ingested **abc** - 2 chunks.")
 
     async def test_get_health_payload_parses_structured_json_result(self):
         client = MCPToolClient(MCPConnectionSettings())
-        client._tool_names = {"gsrs_health"}
+        client._tool_names = {"health"}
 
         class FakeResult:
             structuredContent = {
@@ -318,7 +318,7 @@ class TestMCPToolClient(unittest.IsolatedAsyncioTestCase):
 
     async def test_ensure_ingest_available_raises_component_error(self):
         client = MCPToolClient(MCPConnectionSettings())
-        client._tool_names = {"gsrs_ingest", "gsrs_health"}
+        client._tool_names = {"rag_ingest", "health"}
         client.get_health_payload = lambda: asyncio.sleep(0, result={
             "components": {
                 "vector_db": {"ready": True},
@@ -561,8 +561,8 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(seen["mcp_calls"]), 2)
 
     async def test_load_substances_from_api_stdio_prefers_uuid_ingest_without_preflight(self):
-        """stdio API loading should skip preflight chatter and use compact UUID ingest when available."""
-        seen = {"uuid_calls": [], "ensure_called": 0, "stats_called": 0}
+        """stdio API loading should skip preflight chatter and ingest fetched JSON."""
+        seen = {"ingest_calls": [], "ensure_called": 0, "stats_called": 0}
 
         class FakeAsyncResponse:
             def __init__(self, payload, status_code=200):
@@ -591,7 +591,7 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
                 transport="stdio",
                 command="gsrs-mcp-server",
             )
-            _tool_names = {"gsrs_ingest", "gsrs_ingest_from_uuid", "gsrs_health", "gsrs_statistics"}
+            _tool_names = {"rag_ingest", "health", "statistics"}
 
             async def __aenter__(self):
                 return self
@@ -607,12 +607,9 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
                 seen["stats_called"] += 1
                 raise AssertionError("stdio statistics preflight should be skipped")
 
-            def supports_uuid_ingest(self):
-                return True
-
-            async def ingest_uuid(self, substance_uuid):
-                seen["uuid_calls"].append(substance_uuid)
-                return f"Ingested **{substance_uuid}** - 2 chunks."
+            async def ingest_substance(self, substance):
+                seen["ingest_calls"].append(substance.get("uuid"))
+                return f"Ingested **{substance['uuid']}** into local RAG store: **2** chunk(s)."
 
         with patch("scripts.load_data.httpx.AsyncClient", FakeAsyncClient), \
              patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):
@@ -629,12 +626,12 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["successful"], 1)
         self.assertEqual(result["failed"], 0)
         self.assertEqual(result["total_chunks"], 2)
-        self.assertEqual(seen["uuid_calls"], ["uuid-1"])
+        self.assertEqual(seen["ingest_calls"], ["uuid-1"])
         self.assertEqual(seen["ensure_called"], 0)
         self.assertEqual(seen["stats_called"], 0)
 
     async def test_load_substances_from_api_skips_statistics_after_taskgroup_error(self):
-        """A failing gsrs_statistics call should not prevent later ingestion attempts."""
+        """A failing statistics call should not prevent later ingestion attempts."""
         seen = {"mcp_calls": []}
 
         class FakeAsyncResponse:
@@ -667,7 +664,7 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
                 verify_ssl=False,
                 bearer_token="token",
             )
-            _tool_names = {"gsrs_ingest", "gsrs_health", "gsrs_statistics"}
+            _tool_names = {"rag_ingest", "health", "statistics"}
 
             async def __aenter__(self):
                 return self
@@ -683,7 +680,7 @@ class TestFetchAllSubstanceUuids(unittest.IsolatedAsyncioTestCase):
 
             async def ingest_substance(self, substance):
                 seen["mcp_calls"].append(substance.get("uuid"))
-                return f"Ingested **{substance['uuid']}** - 1 chunks."
+                return f"Ingested **{substance['uuid']}** into local RAG store: **1** chunk(s)."
 
         with patch("scripts.load_data.httpx.AsyncClient", FakeAsyncClient), \
              patch("scripts.load_data.build_mcp_client", return_value=FakeClient()):

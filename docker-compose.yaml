@@ -40,7 +40,6 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
       # Authentication (HTTP Bearer token for the /mcp endpoint)
-      MCP_USERNAME: ${MCP_USERNAME:-admin}
       MCP_PASSWORD: ${MCP_PASSWORD:-admin123}
       # MCP bind configuration
       MCP_API: ${MCP_API:-0.0.0.0}
@@ -51,12 +50,6 @@ services:
       GSRS_API_TIMEOUT: ${GSRS_API_TIMEOUT:-30}
       GSRS_API_VERIFY_SSL: ${GSRS_API_VERIFY_SSL:-true}
       GSRS_API_PUBLIC_ONLY: ${GSRS_API_PUBLIC_ONLY:-false}
-      # Optional LLM API configuration (used by gsrs_ask)
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_URL: ${LLM_URL:-https://api.openai.com/v1/chat/completions}
-      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
-      LLM_VERIFY_SSL: ${LLM_VERIFY_SSL:-true}
-      LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
       # MCP Transport: "streamable-http" or "stdio"
       MCP_TRANSPORT: streamable-http
     ports:
@@ -77,30 +70,8 @@ services:
       - postgres
       - chroma
 
-  # Optional: Open WebUI for LLM interface
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: gsrs-open-webui
-    environment:
-      # Ollama configuration - use host.docker.internal for local Ollama
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:-gsrs_secret_key_change_me_in_production}
-      WEBUI_AUTH: ${WEBUI_AUTH:-true}
-    ports:
-      - "3000:8080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - mcp-server
-    volumes:
-      - open-webui_data:/app/backend/data
-    profiles:
-      - ollama
-    restart: unless-stopped
-
 volumes:
   postgres_data:
-  open-webui_data:
 
 networks:
   default:

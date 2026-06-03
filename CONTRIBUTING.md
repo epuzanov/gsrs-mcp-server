@@ -13,7 +13,7 @@ pip install pytest pytest-cov pytest-asyncio ruff mypy
 copy .env.example .env
 ```
 
-The editable install registers the `gsrs-mcp-server` CLI used throughout the docs and examples.
+The editable install registers the `gsrs-mcp-server` CLI.
 
 ## Local Checks
 
@@ -31,12 +31,12 @@ python -m compileall app tests
 - HTTP auth on `/mcp` is bearer-token based via `MCP_PASSWORD`.
 - Keep changes incremental and easy to review.
 - Favor deterministic tests and failure-mode coverage over broad rewrites.
-- If you change startup or dependency behavior, update `README.md`, `docs/`, and `CHANGELOG.md`.
+- If you change startup, dependencies, or the MCP tool contract, update `README.md` and `CHANGELOG.md`.
 
 ## Architecture Pointers
 
 - `app/main.py`: FastMCP server, tools, and health routes
 - `app/runtime.py`: shared runtime, startup validation, readiness state
-- `app/services/`: retrieval, reranking, answering, embeddings, GSRS API integration
+- `app/services/`: embeddings, vector DB facade, GSRS API integration, markdown summaries
 - `app/db/`: vector backends
 - `tests/`: smoke, unit, and failure-mode coverage

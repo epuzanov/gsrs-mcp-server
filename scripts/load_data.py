@@ -2,7 +2,7 @@
 """
 GSRS MCP Server - Data Loader Script
 
-Loads substances into the GSRS database via the MCP server's `gsrs_ingest`
+Loads substances into the GSRS database via the MCP server's `rag_ingest`
 tool using the official MCP Python client library.
 
 Sources:
@@ -69,7 +69,7 @@ DEFAULT_MCP_URL = "http://localhost:8000/mcp"
 DEFAULT_MCP_COMMAND = "gsrs-mcp-server"
 DEFAULT_MCP_TRANSPORT = "http"
 
-INGEST_COUNT_PATTERN = re.compile(r"Ingested \*\*(.+?)\*\* - (\d+) chunks\.")
+INGEST_COUNT_PATTERN = re.compile(r"Ingested \*\*(.+?)\*\*.*?(?:\*\*)?(\d+)(?:\*\*)? chunk")
 
 
 # ---------------------------------------------------------------------------
@@ -237,23 +237,23 @@ class MCPToolClient:
         return "\n".join(self._result_blocks_to_text(result)).strip()
 
     async def get_health_payload(self) -> dict[str, Any]:
-        self._require_tool("gsrs_health")
+        self._require_tool("health")
         return self._parse_json_payload(
-            await self.call_tool_text("gsrs_health", {}),
-            "gsrs_health",
+            await self.call_tool_text("health", {}),
+            "health",
         )
 
     async def get_statistics(self) -> dict[str, Any]:
-        self._require_tool("gsrs_statistics")
-        text = await self.call_tool_text("gsrs_statistics", {})
+        self._require_tool("statistics")
+        text = await self.call_tool_text("statistics", {})
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             return {"message": text}
 
     async def ensure_ingest_available(self) -> None:
-        self._require_tool("gsrs_ingest")
-        if "gsrs_health" not in self._tool_names:
+        self._require_tool("rag_ingest")
+        if "health" not in self._tool_names:
             return
 
         payload = await self.get_health_payload()
@@ -272,19 +272,9 @@ class MCPToolClient:
 
     async def ingest_substance(self, substance: dict[str, Any]) -> str:
         return await self.call_tool_text(
-            "gsrs_ingest",
+            "rag_ingest",
             {"substance_json": json.dumps(substance)},
         )
-
-    async def ingest_uuid(self, substance_uuid: str) -> str:
-        self._require_tool("gsrs_ingest_from_uuid")
-        return await self.call_tool_text(
-            "gsrs_ingest_from_uuid",
-            {"substance_uuid": substance_uuid},
-        )
-
-    def supports_uuid_ingest(self) -> bool:
-        return "gsrs_ingest_from_uuid" in self._tool_names
 
     def _require_session(self) -> ClientSession:
         if self._session is None:
@@ -382,26 +372,10 @@ async def _ingest_with_fresh_client(
         return await retry_client.ingest_substance(substance)
 
 
-async def _ingest_uuid_with_fresh_client(
-    client: MCPToolClient,
-    substance_uuid: str,
-) -> str:
-    """Retry a UUID ingest with a fresh MCP HTTP session."""
-    logger.warning("Retrying ingest for %s with a fresh MCP session.", substance_uuid)
-    async with build_mcp_client(
-        transport=client.connection.transport,
-        mcp_url=client.connection.mcp_url,
-        command=client.connection.command,
-        verify_ssl=client.connection.verify_ssl,
-        bearer_token=client.connection.bearer_token,
-    ) as retry_client:
-        return await retry_client.ingest_uuid(substance_uuid)
-
-
 async def _log_statistics_if_available(client: MCPToolClient) -> None:
     """Best-effort statistics fetch for operator visibility."""
     tool_names = getattr(client, "_tool_names", None)
-    if tool_names is not None and "gsrs_statistics" not in tool_names:
+    if tool_names is not None and "statistics" not in tool_names:
         return
     if not hasattr(client, "get_statistics"):
         return
@@ -410,7 +384,7 @@ async def _log_statistics_if_available(client: MCPToolClient) -> None:
         statistics = await client.get_statistics()
     except Exception as exc:
         if _is_retryable_http_session_error(client, exc):
-            logger.warning("Skipping gsrs_statistics after HTTP MCP session error: %s", exc)
+            logger.warning("Skipping statistics after HTTP MCP session error: %s", exc)
             return
         raise
 
@@ -495,56 +469,6 @@ async def _ingest_substance_batch(
 
     return {
         "total_substances": len(substances),
-        "total_chunks": total_chunks,
-        "successful": successful,
-        "failed": failed,
-        "errors": errors,
-    }
-
-
-async def _ingest_uuid_batch(
-    client: MCPToolClient,
-    uuids: list[str],
-) -> dict[str, Any]:
-    successful = 0
-    failed = 0
-    total_chunks = 0
-    errors: list[str] = []
-
-    for substance_uuid in uuids:
-        try:
-            result = await client.ingest_uuid(substance_uuid)
-            chunk_count = _parse_ingest_result(result)
-            if chunk_count is None:
-                failed += 1
-                errors.append(f"Substance {substance_uuid}: {result}")
-                continue
-            successful += 1
-            total_chunks += chunk_count
-        except Exception as exc:
-            retry_result: str | None = None
-            if _is_retryable_http_session_error(client, exc):
-                try:
-                    retry_result = await _ingest_uuid_with_fresh_client(client, substance_uuid)
-                except Exception as retry_exc:
-                    failed += 1
-                    errors.append(f"Substance {substance_uuid}: {retry_exc}")
-                    continue
-            else:
-                failed += 1
-                errors.append(f"Substance {substance_uuid}: {exc}")
-                continue
-
-            chunk_count = _parse_ingest_result(retry_result)
-            if chunk_count is None:
-                failed += 1
-                errors.append(f"Substance {substance_uuid}: {retry_result}")
-                continue
-            successful += 1
-            total_chunks += chunk_count
-
-    return {
-        "total_substances": len(uuids),
         "total_chunks": total_chunks,
         "successful": successful,
         "failed": failed,
@@ -642,16 +566,7 @@ async def load_substances_from_api(
 
             for batch_start in range(0, len(substances), batch_size):
                 batch = substances[batch_start: batch_start + batch_size]
-                supports_uuid_ingest = getattr(client, "supports_uuid_ingest", lambda: False)
-                if supports_uuid_ingest():
-                    batch_uuids = [
-                        substance.get("uuid")
-                        for substance in batch
-                        if substance.get("uuid")
-                    ]
-                    result = await _ingest_uuid_batch(client, batch_uuids)
-                else:
-                    result = await _ingest_substance_batch(client, batch)
+                result = await _ingest_substance_batch(client, batch)
                 stats["successful"] += result["successful"]
                 stats["failed"] += result["failed"]
                 stats["total_chunks"] += result["total_chunks"]

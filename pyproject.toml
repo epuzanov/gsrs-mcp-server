@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gsrs-mcp-server"
 version = "0.1.0"
-description = "MCP server for GSRS substance retrieval, similarity search, and grounded answering"
+description = "Compact MCP server for GSRS RAG retrieval and API search"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -46,11 +46,8 @@ dependencies = [
     "pgvector>=0.4.2",
     "numpy>=2.4.4",
     "httpx>=0.28.1",
-    "python-multipart>=0.0.24",
     "aiofiles>=25.1.0",
     "asyncpg>=0.31.0",
-    "python-jose[cryptography]>=3.5.0",
-    "passlib[bcrypt]>=1.7.4",
     "python-dateutil>=2.9.0.post0",
     "gsrs-services-ai @ git+https://github.com/epuzanov/gsrs.services.ai.git",
     "gsrs-model @ git+https://github.com/epuzanov/gsrs.model.git",
@@ -66,17 +63,8 @@ dev = [
     "ruff>=0.15.9",
     "mypy>=1.20.0",
 ]
-examples = [
-    "openai>=2.30.0",
-    "requests>=2.33.1",
-]
-ollama = [
-    "ollama>=0.6.1",
-]
-
 [project.urls]
 Homepage = "https://github.com/epuzanov/gsrs-mcp-server"
-Documentation = "https://github.com/epuzanov/gsrs-mcp-server/tree/main/docs"
 Repository = "https://github.com/epuzanov/gsrs-mcp-server"
 Issues = "https://github.com/epuzanov/gsrs-mcp-server/issues"
 

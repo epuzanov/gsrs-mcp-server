@@ -5,7 +5,6 @@
 #   POSTGRES_PASSWORD
 #   MCP_PASSWORD
 #   EMBEDDING_API_KEY
-#   LLM_API_KEY
 #
 # Then start the stack:
 #   podman kube play podman-kube-play.yaml
@@ -69,8 +68,6 @@ spec:
           value: 0.0.0.0
         - name: MCP_PORT
           value: "8000"
-        - name: MCP_USERNAME
-          value: admin
         - name: MCP_PASSWORD
           value: change-me
         - name: EMBEDDING_API_KEY
@@ -91,16 +88,6 @@ spec:
           value: "true"
         - name: GSRS_API_PUBLIC_ONLY
           value: "false"
-        - name: LLM_API_KEY
-          value: ""
-        - name: LLM_URL
-          value: https://api.openai.com/v1/chat/completions
-        - name: LLM_MODEL
-          value: gpt-4o-mini
-        - name: LLM_VERIFY_SSL
-          value: "true"
-        - name: LLM_TIMEOUT
-          value: "30"
         - name: DEBUG_MODE
           value: "false"
         - name: STARTUP_VALIDATE_EXTERNAL

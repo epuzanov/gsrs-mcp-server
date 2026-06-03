@@ -5,10 +5,9 @@ from typing import Any
 
 from app.config import Settings, settings
 from app.observability import InMemoryMetrics
-from app.services import EmbeddingService, VectorDatabaseService
+from app.services.embedding import EmbeddingService
 from app.services.gsrs_api import GsrsApiService
-from app.services.llm import LLMService
-from app.services.query_pipeline import QueryPipelineService
+from app.services.vector_database import VectorDatabaseService
 
 
 @dataclass
@@ -39,19 +38,6 @@ class ServerRuntime:
             max_retries=app_settings.embedding_max_retries,
             retry_backoff_ms=app_settings.embedding_retry_backoff_ms,
         )
-        self.llm_service = (
-            LLMService(
-                api_key=app_settings.llm_api_key,
-                url=app_settings.llm_url,
-                model=app_settings.llm_model,
-                verify_ssl=app_settings.llm_verify_ssl,
-                timeout=app_settings.llm_timeout,
-                max_retries=app_settings.llm_max_retries,
-                retry_backoff_ms=app_settings.llm_retry_backoff_ms,
-            )
-            if app_settings.llm_url
-            else None
-        )
         self.gsrs_api = GsrsApiService(
             base_url=app_settings.gsrs_api_url,
             timeout=app_settings.gsrs_api_timeout,
@@ -61,7 +47,6 @@ class ServerRuntime:
             retry_backoff_ms=app_settings.gsrs_api_retry_backoff_ms,
         )
         self.chunker = None
-        self.query_pipeline: QueryPipelineService | None = None
         self.components: dict[str, ComponentStatus] = {}
         self.started_at: datetime | None = None
         self.initialized = False
@@ -88,8 +73,6 @@ class ServerRuntime:
         self._initialize_vector_db()
         self._validate_embedding_provider()
         self._initialize_chunker()
-        self._initialize_query_pipeline()
-        self._validate_llm_provider()
         self._validate_gsrs_api()
         self.initialized = True
 
@@ -97,8 +80,6 @@ class ServerRuntime:
         """Close long-lived clients and database connections."""
         self.vector_db.disconnect()
         self.embedding_service.close()
-        if self.llm_service is not None:
-            self.llm_service.close()
         self.initialized = False
 
     def get_component(self, name: str) -> ComponentStatus | None:
@@ -208,19 +189,14 @@ class ServerRuntime:
         return (
             self.vector_backend_available()
             and self._component_ready("embedding")
-            and self.query_pipeline is not None
         )
-
-    def answer_generation_available(self) -> bool:
-        llm_status = self.components.get("answer_generation")
-        return bool(llm_status and llm_status.ready and self.query_pipeline is not None)
 
     def retrieval_unavailable_reason(self) -> str:
         if not self.vector_backend_available():
             return self.vector_backend_unavailable_reason()
         if not self._component_ready("embedding"):
             return self._component_error("embedding", "Embedding provider is not ready.")
-        return "Retrieval pipeline is not ready."
+        return "Retrieval dependencies are not ready."
 
     def ingestion_available(self) -> bool:
         return (
@@ -350,79 +326,6 @@ class ServerRuntime:
                 ready=False,
                 error=f"Chunker initialization failed: {exc}",
             )
-
-    def _initialize_query_pipeline(self) -> None:
-        if not self.retrieval_available_for_initialization:
-            self.query_pipeline = None
-            self._set_component(
-                "query_pipeline",
-                required=True,
-                ready=False,
-                error="Query pipeline is unavailable because required retrieval dependencies are not ready.",
-            )
-            return
-
-        try:
-            self.query_pipeline = QueryPipelineService(
-                vector_db=self.vector_db,
-                embedding_service=self.embedding_service,
-                llm_service=self.llm_service,
-                max_evidence=self.settings.max_answer_evidence,
-                min_confidence=self.settings.answer_confidence_threshold,
-                use_llm=self.llm_service is not None,
-            )
-            self._set_component("query_pipeline", required=True, ready=True)
-        except Exception as exc:
-            self.query_pipeline = None
-            self._set_component(
-                "query_pipeline",
-                required=True,
-                ready=False,
-                error=f"Query pipeline initialization failed: {exc}",
-            )
-
-    @property
-    def retrieval_available_for_initialization(self) -> bool:
-        return (
-            self.vector_backend_available()
-            and self._component_ready("embedding")
-        )
-
-    def _validate_llm_provider(self) -> None:
-        if self.llm_service is None:
-            self._set_component(
-                "answer_generation",
-                required=False,
-                ready=False,
-                error="LLM provider is not configured; gsrs_ask will return retrieval-grounded fallback answers.",
-            )
-            return
-
-        details = self.llm_service.get_model_info()
-        if self.settings.startup_validate_external:
-            try:
-                self.llm_service.complete_text(
-                    system_prompt="Reply with the single word ok.",
-                    user_prompt="ok",
-                    temperature=0.0,
-                )
-                details["validated_via"] = "completion_probe"
-            except Exception as exc:
-                self._set_component(
-                    "answer_generation",
-                    required=False,
-                    ready=False,
-                    error=f"Answer generation provider validation failed: {exc}",
-                    details=details,
-                )
-                return
-        else:
-            details["validated_via"] = "configuration"
-
-        self._set_component("answer_generation", required=False, ready=True, details=details)
-
-        if self.query_pipeline is not None:
-            self.query_pipeline.set_answer_generation_enabled(True, self.llm_service)
 
     def _validate_gsrs_api(self) -> None:
         details = self.gsrs_api.get_status()

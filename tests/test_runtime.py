@@ -15,8 +15,6 @@ def _test_settings(**overrides):
             "embedding_model": "test-embedding-model",
             "embedding_dimension": 8,
             "startup_validate_external": False,
-            "llm_api_key": "",
-            "llm_url": "",
             **overrides,
         }
     )
@@ -49,7 +47,6 @@ class TestServerRuntime(unittest.TestCase):
         self.assertEqual(runtime.runtime_status, "ready_degraded")
         self.assertTrue(runtime.ready)
         self.assertTrue(runtime.degraded)
-        self.assertIsNotNone(runtime.query_pipeline)
         self.assertEqual(runtime.get_status_payload()["statistics"]["total_chunks"], 0)
 
     def test_initialize_reports_vector_backend_failure(self):
@@ -66,7 +63,6 @@ class TestServerRuntime(unittest.TestCase):
         self.assertFalse(runtime.ready)
         self.assertFalse(runtime.vector_backend_available())
         self.assertIn("database unavailable", runtime.vector_backend_unavailable_reason())
-        self.assertIsNone(runtime.query_pipeline)
         payload = runtime.get_status_payload()
         self.assertIn("vector_db", payload["required_component_errors"])
         self.assertIn("database unavailable", payload["readiness_summary"])
@@ -95,7 +91,6 @@ class TestServerRuntime(unittest.TestCase):
         self.assertTrue(runtime.ready)
         self.assertTrue(runtime.degraded)
         self.assertEqual(runtime.runtime_status, "ready_degraded")
-        self.assertIsNotNone(runtime.query_pipeline)
         self.assertFalse(runtime.ingestion_available())
         payload = runtime.get_status_payload()
         self.assertIn("chunker", payload["optional_component_errors"])
