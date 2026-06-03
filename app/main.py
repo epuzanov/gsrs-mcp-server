@@ -107,9 +107,10 @@ auth, token_verifier = _build_auth_settings(settings)
 mcp = FastMCP(
     "GSRS MCP Server",
     instructions=(
-        "Compact GSRS MCP server. Use rag_query for local retrieval evidence, "
+        "Compact GSRS MCP server. Use rag_query or rag_query_with_parent_context for local retrieval evidence, "
         "rag_ingest to load GSRS substance JSON, gsrs_get_substance/summary for "
-        "upstream records, and the GSRS API search tools for live API lookup."
+        "upstream records, and the GSRS API search tools for live API lookup. "
+        "Use get_parent_context to explore parent context for specific chunks."
     ),
     token_verifier=token_verifier,
     auth=auth,
@@ -317,6 +318,135 @@ async def rag_ingest(substance_json: str) -> str:
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
         return f"RAG ingest error: {exc}"
+
+
+@mcp.tool()
+async def rag_query_with_parent_context(
+    query: str,
+    top_k: int = 8,
+    include_parent_text: bool = True,
+    parent_text_limit: int = 1000,
+    filters: str = "",
+) -> str:
+    """Search local ingested GSRS chunks with parent context reconstruction.
+    
+    Performs RAG query and enriches results with parent context reconstructed
+    from chunks sharing the same (document_id, root_section). This provides
+    broader document context without requiring dedicated parent storage.
+    """
+    _ensure_runtime_initialized()
+    tool = _tool_call("rag_query_with_parent_context", query_type="rag_with_parent")
+    try:
+        if not runtime.retrieval_available():
+            reason = runtime.retrieval_unavailable_reason()
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
+            return f"RAG query is currently unavailable: {reason}"
+
+        parsed_filters = _parse_json_object(filters, field_name="filters")
+        embedding = runtime.embedding_service.embed(query)
+        results = runtime.vector_db.similarity_search(
+            embedding,
+            top_k=max(1, min(top_k, 50)),
+            filters=parsed_filters,
+        )
+
+        if not results:
+            tool.finish("abstained", result_count=0, citation_count=0)
+            return f"No local RAG results found for **{query}**."
+
+        # Enrich results with parent context
+        enriched_results = runtime.parent_enricher.enrich_search_results(
+            results,
+            include_parent_text=include_parent_text,
+            parent_text_limit=parent_text_limit,
+        )
+
+        tool.finish("success", result_count=len(enriched_results), citation_count=0)
+
+        lines = [f"Found **{len(enriched_results)}** local RAG result(s) with parent context for **{query}**:\n"]
+        for index, enriched in enumerate(enriched_results, 1):
+            chunk = enriched["chunk"]
+            score = enriched["score"]
+            text = chunk["text"].strip()
+            if len(text) > 500:
+                text = text[:500].rstrip() + "..."
+
+            lines.append(f"{index}. Score: `{score:.4f}` | Section: `{chunk['section']}`")
+            lines.append(f"   Substance UUID: `{chunk['document_id']}`")
+            lines.append(f"   Chunk: `{chunk['chunk_id']}`")
+            lines.append(f"   Text: {text}")
+
+            # Include parent context summary if available
+            if "parent_context" in enriched:
+                parent_ctx = enriched["parent_context"]
+                lines.append(f"   **Parent Context**: {parent_ctx['num_chunks']} chunks in {', '.join(parent_ctx['sections_included'])}")
+                if "parent_text_summary" in enriched:
+                    parent_text = enriched["parent_text_summary"]
+                    lines.append(f"   Parent Summary: {parent_text[:300]}..." if len(parent_text) > 300 else f"   Parent Summary: {parent_text}")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"RAG query with parent context error: {exc}"
+
+
+@mcp.tool()
+async def get_parent_context(chunk_id: str) -> str:
+    """Retrieve parent context for a specific chunk by chunk_id.
+    
+    Returns the reconstructed parent context containing all chunks from the
+    same document and root section as the specified chunk.
+    """
+    _ensure_runtime_initialized()
+    tool = _tool_call("get_parent_context", query_type="parent_context")
+    try:
+        if not runtime.retrieval_available():
+            reason = runtime.retrieval_unavailable_reason()
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
+            return f"Retrieval is currently unavailable: {reason}"
+
+        # Get the chunk
+        docs = runtime.vector_db.get_documents(doc_id=chunk_id)
+        chunk = docs[0] if docs else None
+        if chunk is None:
+            tool.finish("abstained", result_count=0, citation_count=0)
+            return f"Chunk **{chunk_id}** not found."
+
+        # Get parent context
+        enricher = runtime.parent_enricher
+        parent_identity = enricher.get_parent_identity(chunk)
+        parent_context = enricher.reconstruct_parent_context(parent_identity)
+
+        if not parent_context:
+            tool.finish("abstained", result_count=0, citation_count=0)
+            return f"No parent context found for chunk **{chunk_id}** (Document: {parent_identity.document_id}, Section: {parent_identity.root_section})"
+
+        tool.finish("success", result_count=1, citation_count=0)
+
+        lines = [
+            f"**Parent Context for Chunk**: `{chunk_id}`\n",
+            f"**Document**: `{parent_identity.document_id}`",
+            f"**Root Section**: `{parent_identity.root_section}`",
+            f"**Num Chunks in Parent**: {parent_context['num_chunks']}",
+            f"**Sections Included**: {', '.join(parent_context['sections_included'])}\n",
+            "**Text Parts**:",
+        ]
+
+        for i, part in enumerate(parent_context.get("text_parts", [])[:10], 1):
+            section = part.get("section", "unknown")
+            text = part.get("text", "")[:400]
+            lines.append(f"{i}. [{section}] {text}...")
+
+        if parent_context.get("metadata_unified"):
+            lines.append("\n**Unified Metadata**:")
+            for key, value in list(parent_context["metadata_unified"].items())[:5]:
+                value_str = str(value)[:100]
+                lines.append(f"- {key}: {value_str}")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Get parent context error: {exc}"
 
 
 @mcp.tool()

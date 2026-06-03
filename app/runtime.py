@@ -1,12 +1,13 @@
 """Runtime state and startup validation for the GSRS MCP server."""
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from app.config import Settings, settings
 from app.observability import InMemoryMetrics
 from app.services.embedding import EmbeddingService
 from app.services.gsrs_api import GsrsApiService
+from app.services.parent_child_retrieval import ParentContextEnricher
 from app.services.vector_database import VectorDatabaseService
 
 
@@ -50,10 +51,18 @@ class ServerRuntime:
         self.components: dict[str, ComponentStatus] = {}
         self.started_at: datetime | None = None
         self.initialized = False
+        self._parent_enricher: Optional[ParentContextEnricher] = None
 
     @property
     def backend_name(self) -> str:
         return self.vector_db.backend_name
+
+    @property
+    def parent_enricher(self) -> ParentContextEnricher:
+        """Get or create the parent context enricher."""
+        if self._parent_enricher is None:
+            self._parent_enricher = ParentContextEnricher(self.vector_db)
+        return self._parent_enricher
 
     @property
     def ready(self) -> bool:

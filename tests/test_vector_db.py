@@ -77,14 +77,16 @@ class TestChromaDatabase(unittest.TestCase):
         """Test getting a document by ID."""
         self.db.upsert_documents(self.test_docs)
 
-        doc = self.db.get_document("root_codes_0_code")
+        docs = self.db.get_documents(doc_id="root_codes_0_code")
+        doc = docs[0] if docs else None
         self.assertIsNotNone(doc)
         self.assertEqual(doc.chunk_id, "root_codes_0_code")
         self.assertEqual(doc.text, "Test chunk text 0")
 
     def test_get_document_not_found(self):
         """Test getting a non-existent document."""
-        doc = self.db.get_document("nonexistent_path")
+        docs = self.db.get_documents(doc_id="nonexistent_path")
+        doc = docs[0] if docs else None
         self.assertIsNone(doc)
 
     def test_get_documents_by_substance(self):
@@ -106,9 +108,102 @@ class TestChromaDatabase(unittest.TestCase):
         ]
 
         self.db.upsert_documents(docs)
-        results = self.db.get_documents_by_substance(substance_uuid)
+        results = self.db.get_documents(substance_uuid=substance_uuid)
 
         self.assertEqual(len(results), 3)
+
+    def test_get_documents_by_sections_with_sorting(self):
+        """Test getting documents by substance and specific sections with sorting."""
+        substance_uuid = uuid4()
+
+        # Create docs with different sections
+        docs = [
+            VectorDocument(
+                id=f"path_root_{i}",
+                chunk_id=f"root_{i}",
+                document_id=substance_uuid,
+                section="root",
+                text=f"Root chunk {i}",
+                embedding=[0.1] * self.test_dimension,
+                metadata_json={},
+                source_url="test",
+            )
+            for i in range(2)
+        ] + [
+            VectorDocument(
+                id=f"path_names_{i}",
+                chunk_id=f"names_{i}",
+                document_id=substance_uuid,
+                section="names",
+                text=f"Names chunk {i}",
+                embedding=[0.2] * self.test_dimension,
+                metadata_json={},
+                source_url="test",
+            )
+            for i in range(2)
+        ]
+
+        self.db.upsert_documents(docs)
+        
+        # Request sections in specific order: names first, then root
+        results = self.db.get_documents(
+            substance_uuid=substance_uuid,
+            sections=["names", "root"]
+        )
+
+        # Should get all 4 docs, sorted with names first, then root
+        self.assertEqual(len(results), 4)
+        
+        # First two should be from "names" section
+        self.assertEqual(results[0].section, "names")
+        self.assertEqual(results[1].section, "names")
+        
+        # Next two should be from "root" section
+        self.assertEqual(results[2].section, "root")
+        self.assertEqual(results[3].section, "root")
+
+    def test_get_documents_single_section(self):
+        """Test getting documents filtered by single section."""
+        substance_uuid = uuid4()
+
+        docs = [
+            VectorDocument(
+                id=f"path_root_{i}",
+                chunk_id=f"root_{i}",
+                document_id=substance_uuid,
+                section="root",
+                text=f"Root chunk {i}",
+                embedding=[0.1] * self.test_dimension,
+                metadata_json={},
+                source_url="test",
+            )
+            for i in range(2)
+        ] + [
+            VectorDocument(
+                id=f"path_names_{i}",
+                chunk_id=f"names_{i}",
+                document_id=substance_uuid,
+                section="names",
+                text=f"Names chunk {i}",
+                embedding=[0.2] * self.test_dimension,
+                metadata_json={},
+                source_url="test",
+            )
+            for i in range(2)
+        ]
+
+        self.db.upsert_documents(docs)
+        
+        # Request only root section
+        results = self.db.get_documents(
+            substance_uuid=substance_uuid,
+            sections=["root"]
+        )
+
+        # Should get only root docs
+        self.assertEqual(len(results), 2)
+        for result in results:
+            self.assertEqual(result.section, "root")
 
     def test_similarity_search(self):
         """Test similarity search."""
@@ -204,7 +299,8 @@ class TestChromaDatabase(unittest.TestCase):
         count = self.db.upsert_documents([doc])
         self.assertEqual(count, 1)
 
-        retrieved = self.db.get_document("root_update_code")
+        docs = self.db.get_documents(doc_id="root_update_code")
+        retrieved = docs[0] if docs else None
         self.assertIsNotNone(retrieved)
         self.assertEqual(retrieved.text, "Original text")
 

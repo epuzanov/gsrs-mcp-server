@@ -4,9 +4,9 @@ GSRS MCP Server - pgvector Backend Implementation
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy import create_engine, text, distinct, func, update
+from sqlalchemy import create_engine, text, distinct, func, update, cast, String
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.dialects.postgresql import insert, JSONB
+from sqlalchemy.dialects.postgresql import insert, JSONB, ARRAY
 
 from app.db.base import VectorDatabase
 from app.models import Base, VectorDocument, DBQueryResult
@@ -447,39 +447,45 @@ class PGVectorDatabase(VectorDatabase):
                 return False
         return True
 
-    def get_document(self, doc_id: str) -> Optional[VectorDocument]:
-        """Get a document by chunk_id."""
-        session = self._get_session()
-
-        try:
-            chunk = session.query(VectorDocument).filter(
-                VectorDocument.chunk_id == doc_id
-            ).first()
-
-            if chunk:
-                return chunk
-            return None
-        finally:
-            session.close()
-
-    def get_documents_by_substance(
+    def get_documents(
         self,
-        substance_uuid: UUID,
+        doc_id: Optional[str] = None,
+        substance_uuid: Optional[UUID] = None,
+        sections: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> List[VectorDocument]:
-        """Get all documents for a substance."""
+        """Get documents with flexible filtering and section sorting using array_position."""
         session = self._get_session()
         try:
-            query = session.query(VectorDocument).filter(
-                VectorDocument.document_id == substance_uuid
-            )
+            # Query by doc_id (chunk_id)
+            if doc_id is not None:
+                chunk = session.query(VectorDocument).filter(
+                    VectorDocument.chunk_id == doc_id
+                ).first()
+                return [chunk] if chunk else []
 
-            if limit:
-                query = query.limit(limit)
+            # Query by substance (with optional sections filter)
+            if substance_uuid is not None:
+                query = session.query(VectorDocument).filter(
+                    VectorDocument.document_id == substance_uuid
+                )
 
-            chunks = query.all()
+                if sections is not None and len(sections) > 0:
+                    # Filter by sections using OR logic
+                    query = query.filter(VectorDocument.section.in_(sections))
+                    
+                    # Sort by section position in the provided array using database-level ordering
+                    section_array = cast(sections, ARRAY(String))
+                    order_expr = func.array_position(section_array, VectorDocument.section)
+                    query = query.order_by(order_expr)
 
-            return chunks
+                if limit:
+                    query = query.limit(limit)
+
+                return query.all()
+
+            # No filters provided
+            return []
         finally:
             session.close()
 

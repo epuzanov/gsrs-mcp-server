@@ -84,17 +84,28 @@ class VectorDatabase(ABC):
         pass
 
     @abstractmethod
-    def get_document(self, doc_id: str) -> Optional[Any]:
-        """Get a document by ID."""
-        pass
-
-    @abstractmethod
-    def get_documents_by_substance(
+    def get_documents(
         self,
-        substance_uuid: UUID,
+        doc_id: Optional[str] = None,
+        substance_uuid: Optional[UUID] = None,
+        sections: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> List[Any]:
-        """Get all documents for a substance."""
+        """
+        Get documents with flexible filtering.
+
+        Query by document ID, substance UUID, or substance with specific sections.
+
+        Args:
+            doc_id: Optional chunk ID to retrieve document by chunk_id
+            substance_uuid: Optional substance UUID to retrieve all documents for substance
+            sections: Optional list of section names to filter results (requires substance_uuid).
+                     Results are sorted in the order provided. Use OR logic if multiple sections.
+            limit: Optional limit on number of results
+
+        Returns:
+            List of documents matching the criteria
+        """
         pass
 
     @abstractmethod

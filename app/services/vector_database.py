@@ -3,7 +3,7 @@ GSRS MCP Server - Vector Database Service
 Unified service layer for vector database operations.
 """
 from urllib.parse import urlparse
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from uuid import UUID
 
 from app.db.base import VectorDatabase
@@ -152,34 +152,32 @@ class VectorDatabaseService(VectorDatabase):
             mode=mode,
         )
 
-    def get_document(self, doc_id: str) -> Optional[VectorDocument]:
-        """
-        Get a document by its document ID.
-
-        Args:
-            doc_id: The document ID (e.g., "root_uuid:12345678-...")
-
-        Returns:
-            The document or None
-        """
-        return self._ensure_db().get_document(doc_id)
-
-    def get_documents_by_substance(
+    def get_documents(
         self,
-        substance_uuid: UUID,
+        doc_id: Optional[str] = None,
+        substance_uuid: Optional[UUID] = None,
+        sections: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> List[VectorDocument]:
         """
-        Get all chunks for a substance.
+        Get documents with flexible filtering.
 
         Args:
-            substance_uuid: Substance UUID
-            limit: Optional limit
+            doc_id: Optional document ID to retrieve a specific document
+            substance_uuid: Optional substance UUID to retrieve all documents for a substance
+            sections: Optional list of section names to filter results (requires substance_uuid).
+                     Results are sorted in the order provided. Use OR logic if multiple sections.
+            limit: Optional limit on number of results
 
         Returns:
-            List of documents
+            List of matching documents
         """
-        return self._ensure_db().get_documents_by_substance(substance_uuid, limit)
+        return self._ensure_db().get_documents(
+            doc_id=doc_id,
+            substance_uuid=substance_uuid,
+            sections=sections,
+            limit=limit
+        )
 
     def get_unique_values(self, field: str) -> List[str]:
         """Get unique values for a field."""

@@ -216,98 +216,102 @@ class ChromaDatabase(VectorDatabase):
 
         return query_results
     
-    def get_document(self, doc_id: str) -> Optional[VectorDocument]:
-        """Get a document by ID."""
-        if self.collection is None:
-            raise RuntimeError("Database not connected. Call connect() first.")
-
-        results = self.collection.get(
-            ids=[doc_id],
-            include=["embeddings", "metadatas", "documents"]
-        )
-
-        # ChromaDB returns flat lists: {'ids': ['id1'], 'metadatas': [meta1], ...}
-        if not results or not results['ids'] or len(results['ids']) == 0:
-            return None
-
-        metadata = results['metadatas'][0] if results['metadatas'] and len(results['metadatas']) > 0 else {}
-
-        metadata_json = {}
-        if 'metadata_json' in metadata:
-            metadata_value = metadata['metadata_json']
-            if isinstance(metadata_value, str):
-                try:
-                    metadata_json = json.loads(metadata_value)
-                except (json.JSONDecodeError, TypeError):
-                    metadata_json = {}
-
-        # Handle embeddings - ChromaDB may return numpy arrays
-        embedding: List[float] = []
-        if results['embeddings'] is not None and len(results['embeddings']) > 0:
-            emb = results['embeddings'][0]
-            embedding = [] if emb is None else emb.tolist() if not isinstance(emb, Sequence) else list(emb)
-
-        return VectorDocument(
-            chunk_id=metadata.get('chunk_id', results['ids'][0]),
-            document_id=UUID(str(metadata.get('document_id', '00000000-0000-0000-0000-000000000000'))),
-            section=metadata.get('section', ''),
-            source_url=metadata.get('source_url', ''),
-            text=results['documents'][0] if results['documents'] and len(results['documents']) > 0 else '',
-            embedding=embedding,
-            metadata_json=metadata_json
-        )
-
-    def get_documents_by_substance(
+    def get_documents(
         self,
-        substance_uuid: UUID,
+        doc_id: Optional[str] = None,
+        substance_uuid: Optional[UUID] = None,
+        sections: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> List[VectorDocument]:
-        """Get all documents for a substance."""
+        """Get documents with flexible filtering and section sorting."""
         if self.collection is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
-        results = self.collection.get(
-            where={"document_id": str(substance_uuid)},
-            include=["embeddings", "metadatas", "documents"]
-        )
+        # Helper to build VectorDocument from ChromaDB result
+        def build_document(metadata, doc_id, embedding, text):
+            metadata_json = {}
+            if 'metadata_json' in metadata:
+                metadata_value = metadata['metadata_json']
+                if isinstance(metadata_value, str):
+                    try:
+                        metadata_json = json.loads(metadata_value)
+                    except (json.JSONDecodeError, TypeError):
+                        metadata_json = {}
+            
+            embedding_list = []
+            if embedding is not None:
+                embedding_list = embedding.tolist() if not isinstance(embedding, Sequence) else list(embedding)
+            
+            return VectorDocument(
+                chunk_id=metadata.get('chunk_id', doc_id),
+                document_id=UUID(str(metadata.get('document_id', '00000000-0000-0000-0000-000000000000'))),
+                section=metadata.get('section', ''),
+                source_url=metadata.get('source_url', ''),
+                text=text,
+                embedding=embedding_list,
+                metadata_json=metadata_json
+            )
 
-        documents = []
-        count = 0
+        # Query by doc_id
+        if doc_id is not None:
+            results = self.collection.get(
+                ids=[doc_id],
+                include=["embeddings", "metadatas", "documents"]
+            )
+            
+            if not results or not results['ids'] or len(results['ids']) == 0:
+                return []
+            
+            metadata = results['metadatas'][0] if results['metadatas'] else {}
+            embedding = results['embeddings'][0] if results['embeddings'] else None
+            text = results['documents'][0] if results['documents'] else ''
+            
+            return [build_document(metadata, results['ids'][0], embedding, text)]
 
-        if results and results['ids']:
-            for i, doc_id in enumerate(results['ids']):
-                if limit and count >= limit:
-                    break
+        # Query by substance (with optional sections filter)
+        if substance_uuid is not None:
+            # Build where clause for sections
+            if sections is not None and len(sections) > 0:
+                if len(sections) == 1:
+                    where = {"$and": [{"document_id": str(substance_uuid)}, {"section": sections[0]}]}
+                else:
+                    # Create OR condition for multiple sections
+                    where = {"$and": [
+                        {"document_id": str(substance_uuid)},
+                        {"$or": [{"section": s} for s in sections]}
+                    ]}
+            else:
+                where = {"document_id": str(substance_uuid)}
+            
+            results = self.collection.get(
+                where=where,
+                include=["embeddings", "metadatas", "documents"]
+            )
+            
+            documents = []
+            count = 0
+            
+            if results and results['ids']:
+                for i, doc_id_val in enumerate(results['ids']):
+                    if limit and count >= limit:
+                        break
+                    
+                    metadata = results['metadatas'][i] if results['metadatas'] and i < len(results['metadatas']) else {}
+                    embedding = results['embeddings'][i] if results['embeddings'] and i < len(results['embeddings']) else None
+                    text = results['documents'][i] if results['documents'] and i < len(results['documents']) else ''
+                    
+                    documents.append(build_document(metadata, doc_id_val, embedding, text))
+                    count += 1
+            
+            # Sort by sections order if provided
+            if sections is not None and len(sections) > 0 and documents:
+                section_order = {section: i for i, section in enumerate(sections)}
+                documents.sort(key=lambda doc: section_order.get(doc.section, len(sections)))
+            
+            return documents
 
-                metadata = results['metadatas'][i] if results['metadatas'] and i < len(results['metadatas']) else {}
-
-                metadata_json = {}
-                if 'metadata_json' in metadata:
-                    metadata_value = metadata['metadata_json']
-                    if isinstance(metadata_value, str):
-                        try:
-                            metadata_json = json.loads(metadata_value)
-                        except (json.JSONDecodeError, TypeError):
-                            metadata_json = {}
-
-                # Handle embeddings - ChromaDB may return numpy arrays
-                embedding: List[float] = []
-                if results['embeddings'] is not None and i < len(results['embeddings']):
-                    emb = results['embeddings'][i]
-                    embedding = [] if emb is None else emb.tolist() if not isinstance(emb, Sequence) else list(emb)
-
-                documents.append(VectorDocument(
-                    chunk_id=metadata.get('chunk_id', doc_id),
-                    document_id=UUID(str(metadata.get('document_id', '00000000-0000-0000-0000-000000000000'))),
-                    section=metadata.get('section', ''),
-                    source_url=metadata.get('source_url', ''),
-                    text=results['documents'][i] if results['documents'] and i < len(results['documents']) else '',
-                    embedding=embedding,
-                    metadata_json=metadata_json
-                ))
-                count += 1
-
-        return documents
+        # No filters provided
+        return []
     
     def delete_documents_by_substance(self, substance_uuid: UUID) -> int:
         """Delete all documents for a substance."""
@@ -683,5 +687,3 @@ class ChromaDatabase(VectorDatabase):
             return 1.0 if total_score > 0 else 0.0
 
         return total_score / total_weight if total_weight > 0 else 0.0
-
-
