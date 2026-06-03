@@ -313,38 +313,32 @@ class ChromaDatabase(VectorDatabase):
         # No filters provided
         return []
     
-    def delete_documents_by_substance(self, substance_uuid: UUID) -> int:
+    def delete(self, substance_uuid: Optional[UUID] = None) -> int:
         """Delete all documents for a substance."""
         if self.collection is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
         # First get count
         results = self.collection.get(
-            where={"document_id": str(substance_uuid)},
+            where={"document_id": str(substance_uuid)} if substance_uuid else None,
             include=[]
         )
 
         count = len(results['ids']) if results and results['ids'] else 0
 
         # Delete
-        self.collection.delete(
-            where={"document_id": str(substance_uuid)}
-        )
-
-        return count
-    
-    def delete_all(self) -> None:
-        """Delete all documents."""
-        if self.collection is None:
-            raise RuntimeError("Database not connected. Call connect() first.")
-        
-        # Delete and recreate collection
-        if self.client is not None:
+        if substance_uuid:
+            self.collection.delete(
+                where={"document_id": str(substance_uuid)}
+            )
+        elif self.client is not None:
             self.client.delete_collection(self.collection.name)
             self.collection = self.client.create_collection(
                 name=self.collection.name,
                 metadata=self.collection.metadata
             )
+
+        return count
     
     def get_statistics(self) -> Dict[str, int]:
         """Get database statistics."""

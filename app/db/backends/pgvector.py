@@ -489,27 +489,18 @@ class PGVectorDatabase(VectorDatabase):
         finally:
             session.close()
 
-    def delete_documents_by_substance(self, substance_uuid: UUID) -> int:
+    def delete(self, substance_uuid: Optional[UUID] = None) -> int:
         """Delete all documents for a substance."""
         session = self._get_session()
         try:
-            count = session.query(VectorDocument).filter(
-                VectorDocument.document_id == substance_uuid
-            ).delete(synchronize_session=False)
+            if substance_uuid is None:
+                count = session.query(VectorDocument).delete()
+            else:
+                count = session.query(VectorDocument).filter(
+                    VectorDocument.document_id == substance_uuid
+                ).delete(synchronize_session=False)
             session.commit()
             return count
-        except Exception as e:
-            session.rollback()
-            raise e
-        finally:
-            session.close()
-
-    def delete_all(self) -> None:
-        """Delete all documents."""
-        session = self._get_session()
-        try:
-            session.query(VectorDocument).delete()
-            session.commit()
         except Exception as e:
             session.rollback()
             raise e

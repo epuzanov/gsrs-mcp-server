@@ -51,7 +51,7 @@ class TestChromaDatabase(unittest.TestCase):
     def tearDown(self):
         """Clean up test directory."""
         try:
-            self.db.delete_all()
+            self.db.delete()
         except Exception:
             pass
         self.db.disconnect()
@@ -231,7 +231,7 @@ class TestChromaDatabase(unittest.TestCase):
 
         self.assertGreater(len(results), 0)
 
-    def test_delete_documents_by_substance(self):
+    def test_delete(self):
         """Test deleting documents by substance UUID."""
         substance_uuid = uuid4()
 
@@ -250,7 +250,7 @@ class TestChromaDatabase(unittest.TestCase):
         ]
 
         self.db.upsert_documents(docs)
-        deleted = self.db.delete_documents_by_substance(substance_uuid)
+        deleted = self.db.delete(substance_uuid)
 
         self.assertEqual(deleted, 3)
 
@@ -260,7 +260,7 @@ class TestChromaDatabase(unittest.TestCase):
     def test_delete_all(self):
         """Test deleting all documents."""
         self.db.upsert_documents(self.test_docs)
-        self.db.delete_all()
+        self.db.delete()
 
         stats = self.db.get_statistics()
         self.assertEqual(stats["total_chunks"], 0)
@@ -526,7 +526,7 @@ class TestPGVectorDatabase(unittest.TestCase):
         mock_query.filter.assert_called()
         mock_session.close.assert_called_once()
 
-    def test_delete_documents_by_substance_rolls_back_on_error(self):
+    def test_delete_rolls_back_on_error(self):
         from app.db.backends.pgvector import PGVectorDatabase
 
         db = PGVectorDatabase("postgresql://test:test@localhost/test")
@@ -535,7 +535,7 @@ class TestPGVectorDatabase(unittest.TestCase):
         db._get_session = MagicMock(return_value=mock_session)
 
         with self.assertRaises(RuntimeError):
-            db.delete_documents_by_substance(uuid4())
+            db.delete(uuid4())
 
         mock_session.rollback.assert_called_once()
         mock_session.close.assert_called_once()
@@ -549,7 +549,7 @@ class TestPGVectorDatabase(unittest.TestCase):
         db._get_session = MagicMock(return_value=mock_session)
 
         with self.assertRaises(RuntimeError):
-            db.delete_all()
+            db.delete()
 
         mock_session.rollback.assert_called_once()
         mock_session.close.assert_called_once()

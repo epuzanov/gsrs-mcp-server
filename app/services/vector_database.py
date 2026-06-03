@@ -183,7 +183,7 @@ class VectorDatabaseService(VectorDatabase):
         """Get unique values for a field."""
         return self._ensure_db().get_unique_values(field)
 
-    def delete_documents_by_substance(self, substance_uuid: UUID) -> int:
+    def delete(self, substance_uuid: Optional[UUID] = None) -> int:
         """
         Delete all chunks for a substance.
 
@@ -193,11 +193,7 @@ class VectorDatabaseService(VectorDatabase):
         Returns:
             Number of deleted documents
         """
-        return self._ensure_db().delete_documents_by_substance(substance_uuid)
-
-    def delete_all(self) -> None:
-        """Delete all documents."""
-        self._ensure_db().delete_all()
+        return self._ensure_db().delete(substance_uuid)
 
     def get_statistics(self) -> Dict[str, int]:
         """Get database statistics."""

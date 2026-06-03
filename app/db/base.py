@@ -109,18 +109,13 @@ class VectorDatabase(ABC):
         pass
 
     @abstractmethod
-    def delete_documents_by_substance(self, substance_uuid: UUID) -> int:
+    def delete(self, substance_uuid: Optional[UUID] = None) -> int:
         """
         Delete all documents for a substance.
 
         Returns:
             Number of documents deleted
         """
-        pass
-
-    @abstractmethod
-    def delete_all(self) -> None:
-        """Delete all documents from the database."""
         pass
 
     @abstractmethod
