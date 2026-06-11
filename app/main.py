@@ -227,15 +227,12 @@ def _format_api_results(payload: dict[str, Any], *, label: str) -> str:
 
 def _ingest_substance_payload(substance: dict[str, Any]) -> tuple[str, int]:
     """Validate, chunk, embed, and upsert a GSRS substance payload."""
-    from gsrs.model import Substance
-
-    parsed_substance = Substance.model_validate(substance)
     if runtime.chunker is None:
         raise RuntimeError("Chunker is not initialized.")
 
-    chunks = runtime.chunker.chunk(parsed_substance)
+    chunks = runtime.chunker.chunk(substance)
     if not chunks:
-        return str(getattr(parsed_substance, "uuid", "unknown")), 0
+        return str(substance.get("uuid", "unknown")), 0
 
     display_name = _display_name(substance, default="")
     texts = [str(chunk.text) for chunk in chunks]
@@ -252,7 +249,7 @@ def _ingest_substance_payload(substance: dict[str, Any]) -> tuple[str, int]:
         documents.append(chunk)
 
     count = runtime.vector_db.upsert_documents(documents)
-    return str(getattr(parsed_substance, "uuid", "unknown")), count
+    return str(substance.get("uuid", "unknown")), count
 
 
 @mcp.tool()

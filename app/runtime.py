@@ -307,8 +307,7 @@ class ServerRuntime:
 
     def _initialize_chunker(self) -> None:
         try:
-            from gsrs.model import Substance
-            from gsrs.services.ai import ChunkerConfig, SubstanceChunker
+            from app.services.chunker import ChunkerConfig, SubstanceChunker
             from app.models import VectorDocument
 
             self.chunker = SubstanceChunker(
@@ -325,7 +324,6 @@ class ServerRuntime:
                     include_grouped_relationship_summaries=self.settings.chunker_include_grouped_relationship_summaries,
                 ),
             )
-            _ = Substance
             self._set_component("chunker", required=False, ready=True)
         except Exception as exc:
             self.chunker = None
