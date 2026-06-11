@@ -60,7 +60,7 @@ class PGVectorDatabase(VectorDatabase):
         metadata = doc.metadata_json or {}
 
         for key in [
-            "canonical_name",
+            "display_name",
             "entity_name",
             "substance_name",
             "chunk_type",
@@ -241,7 +241,7 @@ class PGVectorDatabase(VectorDatabase):
         Search for documents whose metadata matches the given example JSON.
 
         Args:
-            example: Example metadata to match against (e.g., {"canonical_name": "Aspirin"})
+            example: Example metadata to match against (e.g., {"display_name": "Aspirin"})
             top_k: Maximum number of results
             mode: Matching strategy:
                 - "match": all top-level keys in example must match with same values
@@ -333,7 +333,7 @@ class PGVectorDatabase(VectorDatabase):
             "official_names": 0.05,    # Priority 6: Official names
             "all_codes": 0.02,         # Lower priority: other codes
             "other_names": 0.02,       # Lower priority: other names
-            "canonical_name": 0.05,    # Fallback name matching
+            "display_name": 0.06,    # Fallback name matching
             "classifications": 0.03,   # Additional context
         }
 
@@ -388,7 +388,7 @@ class PGVectorDatabase(VectorDatabase):
                     elif any(ex in str(doc_value).lower() for ex in example_set):
                         key_score = 0.7
 
-            elif key == "canonical_name":
+            elif key == "display_name":
                 # Fallback name matching
                 if str(doc_value).lower() == str(example_value).lower():
                     key_score = 1.0

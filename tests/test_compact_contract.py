@@ -30,6 +30,8 @@ class TestCompactToolContract(unittest.TestCase):
             [
                 "rag_query",
                 "rag_ingest",
+                "rag_query_with_parent_context",
+                "get_parent_context",
                 "gsrs_get_substance",
                 "gsrs_get_summary",
                 "gsrs_parametric_search",

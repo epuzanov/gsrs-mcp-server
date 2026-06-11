@@ -104,7 +104,7 @@ Text Parts:
 ...
 
 Unified Metadata:
-- canonical_name: Acetylsalicylic Acid
+- display_name: Acetylsalicylic Acid
 - substance_class: Chemical
 - approval_status: Approved
 ...
@@ -168,7 +168,7 @@ class ParentContextEnricher:
         ...
     ],
     "metadata_unified": {
-        "canonical_name": "Acetylsalicylic Acid",
+        "display_name": "Acetylsalicylic Acid",
         "substance_class": "Chemical",
         ...
     }

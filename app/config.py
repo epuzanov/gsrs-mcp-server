@@ -39,16 +39,12 @@ class Settings(BaseSettings):
     embedding_retry_backoff_ms: int = int(os.getenv("EMBEDDING_RETRY_BACKOFF_MS", "250"))
 
     # SubstanceChunker Configuration (ChunkerConfig fine-tuning)
-    # See gsrs.services.ai.ChunkerConfig
-    chunker_name_batch_size: int = int(os.getenv("CHUNKER_NAME_BATCH_SIZE", "30"))
-    chunker_emit_atomic_name_chunks: bool = _get_bool_env("CHUNKER_EMIT_ATOMIC_NAME_CHUNKS", False)
+    # See app.services.chunker.ChunkerConfig
+    chunker_emit_atomic_name_chunks: bool = _get_bool_env("CHUNKER_EMIT_ATOMIC_NAME_CHUNKS", True)
     chunker_emit_sequence_segments: bool = _get_bool_env("CHUNKER_EMIT_SEQUENCE_SEGMENTS", False)
-    chunker_max_sequence_segment_len: int = int(os.getenv("CHUNKER_MAX_SEQUENCE_SEGMENT_LEN", "300"))
-    chunker_emit_full_sequence_in_text: bool = _get_bool_env("CHUNKER_EMIT_FULL_SEQUENCE_IN_TEXT", False)
-    chunker_include_admin_validation_notes: bool = _get_bool_env("CHUNKER_INCLUDE_ADMIN_VALIDATION_NOTES", False)
-    chunker_include_reference_index_chunk: bool = _get_bool_env("CHUNKER_INCLUDE_REFERENCE_INDEX_CHUNK", True)
+    chunker_emit_full_sequence_in_text: bool = _get_bool_env("CHUNKER_EMIT_FULL_SEQUENCE_IN_TEXT", True)
+    chunker_include_admin_validation_notes: bool = _get_bool_env("CHUNKER_INCLUDE_ADMIN_VALIDATION_NOTES", True)
     chunker_include_classification_chunk: bool = _get_bool_env("CHUNKER_INCLUDE_CLASSIFICATION_CHUNK", True)
-    chunker_include_grouped_relationship_summaries: bool = _get_bool_env("CHUNKER_INCLUDE_GROUPED_RELATIONSHIP_SUMMARIES", True)
 
     # MCP endpoint
     mcp_transport: Literal["stdio", "sse", "streamable-http"] = os.getenv("MCP_TRANSPORT", "streamable-http").strip().lower()

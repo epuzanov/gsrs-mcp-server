@@ -86,7 +86,7 @@ Text Parts:
 6. [references] WHO List: J01BA51, FDA Orange Book entries...
 
 Unified Metadata:
-- canonical_name: Acetylsalicylic Acid
+- display_name: Acetylsalicylic Acid
 - substance_class: Chemical
 - substance_type: Small Molecule
 - regulatory_status: Approved

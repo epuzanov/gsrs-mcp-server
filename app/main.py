@@ -197,7 +197,7 @@ def _display_name(payload: dict[str, Any], default: str = "?") -> str:
                 display = display.strip().lower() == "true"
             if display and entry.get("name"):
                 return str(entry["name"])
-    for key in ("canonical_name", "substance_name", "entity_name", "name"):
+    for key in ("display_name", "substance_name", "entity_name", "name"):
         if payload.get(key):
             return str(payload[key])
     return default
@@ -242,7 +242,7 @@ def _ingest_substance_payload(substance: dict[str, Any]) -> tuple[str, int]:
     for chunk, embedding in zip(chunks, embeddings):
         if display_name:
             metadata = chunk.metadata_json or {}
-            metadata["canonical_name"] = display_name
+            metadata["display_name"] = display_name
             metadata["substance_name"] = display_name
             chunk.metadata_json = metadata
         chunk.set_embedding(embedding)

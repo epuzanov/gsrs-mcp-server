@@ -44,9 +44,9 @@ class TestServerRuntime(unittest.TestCase):
             runtime.initialize()
 
         self.assertTrue(runtime.initialized)
-        self.assertEqual(runtime.runtime_status, "ready_degraded")
+        self.assertEqual(runtime.runtime_status, "ready")
         self.assertTrue(runtime.ready)
-        self.assertTrue(runtime.degraded)
+        self.assertFalse(runtime.degraded)
         self.assertEqual(runtime.get_status_payload()["statistics"]["total_chunks"], 0)
 
     def test_initialize_reports_vector_backend_failure(self):

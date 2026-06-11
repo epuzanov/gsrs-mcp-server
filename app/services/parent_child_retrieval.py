@@ -8,11 +8,33 @@ and parent context is reconstructed by loading all chunks sharing the same paren
 This approach minimizes schema changes, migration effort, and reindexing while
 delivering most of the benefits of parent-child retrieval.
 """
+import logging
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any, Set, Tuple
 from uuid import UUID
 
 from app.models import VectorDocument, DBQueryResult
+from app.observability import InMemoryMetrics
+from app.services.chunker import sections_in_root
+
+logger = logging.getLogger(__name__)
+
+
+# Default cap on per-chunk text inside the parent context. Mirrors the
+# value previously hard-coded in ``reconstruct_parent_context``.
+_DEFAULT_PARENT_CHUNK_TEXT_LIMIT = 500
+
+# Default cap on aggregated parent text passed to the model.
+_DEFAULT_PARENT_TEXT_LIMIT = 1000
+
+# Default cap on number of text parts aggregated from the parent context.
+_DEFAULT_PARENT_TEXT_PARTS_LIMIT = 5
+
+# Cap on chunks pulled from the backend when reconstructing a parent.
+# Keeps a runaway large section from blowing up the response. The
+# backends all support ``limit`` pushdown.
+_DEFAULT_PARENT_BACKEND_LIMIT = 200
 
 
 @dataclass
@@ -42,14 +64,23 @@ class ParentContextEnricher:
     augmented with context from all chunks belonging to the same parent identity.
     """
 
-    def __init__(self, vector_db):
+    def __init__(
+        self,
+        vector_db,
+        metrics: Optional[InMemoryMetrics] = None,
+    ):
         """
         Initialize the parent context enricher.
 
         Args:
             vector_db: VectorDatabase instance for retrieving chunks
+            metrics: Optional ``InMemoryMetrics`` used to record rebuild
+                latency and truncation events. When ``None`` a fresh
+                instance is created — keeps the enricher observable in
+                tests and isolated callers without changing the API.
         """
         self.vector_db = vector_db
+        self.metrics = metrics if metrics is not None else InMemoryMetrics()
 
     @staticmethod
     def extract_root_section(chunk: VectorDocument) -> str:
@@ -109,37 +140,90 @@ class ParentContextEnricher:
         self,
         parent_identity: ParentIdentity,
         exclude_sections: Optional[Set[str]] = None,
+        exclude_chunk_ids: Optional[Set[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Reconstruct parent context from chunks with the given parent identity.
 
         Loads all chunks sharing the same parent identity and builds a unified
-        parent context document containing aggregated information.
+        parent context document containing aggregated information. The query
+        is pushed down to the backend (``sections=[...]``, ``limit=...``) so
+        we don't fetch the whole document and filter in Python.
 
         Args:
             parent_identity: The parent identity to reconstruct context for
-            exclude_sections: Sections to exclude from parent context
+            exclude_sections: Sections to exclude from the parent context.
+                Legacy parameter; prefer ``exclude_chunk_ids`` so siblings
+                in the same section are not silently dropped.
+            exclude_chunk_ids: Chunk IDs to exclude (typically the child
+                chunk's own ID). Preferred over ``exclude_sections``.
 
         Returns:
             Dictionary containing parent context, or None if no chunks found
         """
         if exclude_sections is None:
             exclude_sections = set()
+        if exclude_chunk_ids is None:
+            exclude_chunk_ids = set()
 
-        # Retrieve all chunks for this document
-        all_chunks = self.vector_db.get_documents(
-            substance_uuid=parent_identity.document_id
-        )
+        started_at = time.perf_counter()
+        try:
+            context = self._reconstruct_parent_context_inner(
+                parent_identity, exclude_sections, exclude_chunk_ids
+            )
+        finally:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+            self.metrics.increment("parent_rebuild.count")
+            self.metrics.observe_latency("parent_rebuild.latency_ms", elapsed_ms)
 
-        if not all_chunks:
+        return context
+
+    def _reconstruct_parent_context_inner(
+        self,
+        parent_identity: ParentIdentity,
+        exclude_sections: Set[str],
+        exclude_chunk_ids: Set[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Inner reconstruction logic, isolated for clean latency wrapping.
+
+        Pushes the section filter down to the vector store so PGVector /
+        Chroma can use indexed column filters. As a safety net, also filters
+        in Python so that legacy chunks whose ``root_section`` is the global
+        ``"overview"`` (i.e. produced by the pre-alignment chunker) still
+        match correctly.
+        """
+        parent_sections = sections_in_root(parent_identity.root_section)
+
+        # Push the section filter down to the backend.
+        try:
+            parent_chunks = self.vector_db.get_documents(
+                substance_uuid=parent_identity.document_id,
+                sections=parent_sections,
+                limit=_DEFAULT_PARENT_BACKEND_LIMIT,
+            )
+        except TypeError:
+            # Backends that don't yet accept sections/limit fall back to
+            # the whole-document fetch.
+            parent_chunks = self.vector_db.get_documents(
+                substance_uuid=parent_identity.document_id
+            )
+
+        if not parent_chunks:
             return None
 
-        # Filter chunks by root section
-        parent_chunks = [
-            chunk for chunk in all_chunks
-            if self.extract_root_section(chunk) == parent_identity.root_section
-            and chunk.section not in exclude_sections
-        ]
+        # Defensive in-Python filter for legacy data and the
+        # ``exclude_chunk_ids`` case (the backend only knows about
+        # ``section``; chunk_id exclusion has to happen here).
+        filtered_chunks = []
+        for chunk in parent_chunks:
+            if self.extract_root_section(chunk) != parent_identity.root_section:
+                continue
+            if chunk.chunk_id in exclude_chunk_ids:
+                continue
+            if chunk.section in exclude_sections:
+                continue
+            filtered_chunks.append(chunk)
+        parent_chunks = filtered_chunks
 
         if not parent_chunks:
             return None
@@ -159,10 +243,26 @@ class ParentContextEnricher:
         # Aggregate text from all parent chunks
         for chunk in parent_chunks:
             if chunk.text:
+                original_len = len(chunk.text)
+                truncated_text = (
+                    chunk.text[:_DEFAULT_PARENT_CHUNK_TEXT_LIMIT]
+                    if original_len > _DEFAULT_PARENT_CHUNK_TEXT_LIMIT
+                    else chunk.text
+                )
+                if (
+                    original_len > _DEFAULT_PARENT_CHUNK_TEXT_LIMIT
+                    and chunk.section not in exclude_sections
+                ):
+                    # Per-chunk truncation is rare but possible; surface it on
+                    # the context so callers can decide whether to widen the
+                    # limit.
+                    self.metrics.increment("parent_text.truncated")
                 parent_context["text_parts"].append({
+                    "chunk_id": chunk.chunk_id,
                     "section": chunk.section,
-                    "text": chunk.text[:500],  # Limit to first 500 chars per chunk
+                    "text": truncated_text,
                     "source_url": chunk.source_url,
+                    "truncated": original_len > _DEFAULT_PARENT_CHUNK_TEXT_LIMIT,
                 })
 
             # Merge metadata
@@ -178,7 +278,7 @@ class ParentContextEnricher:
         chunk: VectorDocument,
         parent_context: Optional[Dict[str, Any]] = None,
         include_parent_text: bool = True,
-        parent_text_limit: int = 1000,
+        parent_text_limit: int = _DEFAULT_PARENT_TEXT_LIMIT,
     ) -> Dict[str, Any]:
         """
         Enrich a chunk with parent context information.
@@ -190,7 +290,11 @@ class ParentContextEnricher:
             parent_text_limit: Maximum character limit for parent text content
 
         Returns:
-            Dictionary with chunk data and parent context
+            Dictionary with chunk data and parent context. When
+            ``include_parent_text`` is true and the aggregated text was cut
+            down to fit ``parent_text_limit``, the result includes
+            ``parent_text_truncated: true`` so callers can detect lossy
+            summaries.
         """
         enriched = {
             "chunk": {
@@ -203,25 +307,35 @@ class ParentContextEnricher:
             },
         }
 
-        # Get or reconstruct parent context
+        # Get or reconstruct parent context. Exclude the child by chunk_id
+        # (not by section) so siblings in the same section are preserved.
         if parent_context is None:
             parent_identity = self.get_parent_identity(chunk)
             parent_context = self.reconstruct_parent_context(
                 parent_identity,
-                exclude_sections={chunk.section}  # Don't include the chunk's own section
+                exclude_chunk_ids={chunk.chunk_id},
             )
 
         if parent_context:
             enriched["parent_context"] = parent_context
             if include_parent_text and parent_context.get("text_parts"):
-                # Aggregate parent text, respecting limit
+                # Aggregate parent text, respecting the parts and char limits.
+                aggregated_parts = parent_context["text_parts"][
+                    :_DEFAULT_PARENT_TEXT_PARTS_LIMIT
+                ]
                 parent_text = "\n\n".join(
                     f"[{part['section']}] {part['text']}"
-                    for part in parent_context["text_parts"][:5]  # Limit to first 5 parts
+                    for part in aggregated_parts
                 )
+                truncated = False
                 if len(parent_text) > parent_text_limit:
                     parent_text = parent_text[:parent_text_limit].rstrip() + "..."
+                    truncated = True
+                    self.metrics.increment("parent_text.truncated")
                 enriched["parent_text_summary"] = parent_text
+                if truncated:
+                    enriched["parent_text_truncated"] = True
+                    enriched["parent_text_truncated_chars"] = parent_text_limit
 
         return enriched
 
@@ -229,13 +343,17 @@ class ParentContextEnricher:
         self,
         results: List[DBQueryResult],
         include_parent_text: bool = True,
-        parent_text_limit: int = 1000,
+        parent_text_limit: int = _DEFAULT_PARENT_TEXT_LIMIT,
     ) -> List[Dict[str, Any]]:
         """
         Enrich multiple search results with parent context.
 
-        Reconstructs parent context for results, caching parent contexts to avoid
-        redundant lookups when multiple results share the same parent.
+        Reconstructs parent context for results, deduping on parent
+        identity so multiple results that share a parent do not
+        duplicate the backend fetch. Per-child exclusion
+        (``exclude_chunk_ids``) is applied after the lookup, so a
+        child never echoes itself in its own parent summary even when
+        several results in the same call share a parent.
 
         Args:
             results: List of DBQueryResult from vector search
@@ -245,22 +363,35 @@ class ParentContextEnricher:
         Returns:
             List of enriched result dictionaries
         """
-        # Cache parent contexts by parent identity to avoid redundant lookups
-        parent_cache: Dict[ParentIdentity, Optional[Dict[str, Any]]] = {}
+        # Dedup the *raw* parent context (no exclusions applied) by parent
+        # identity. Each child applies its own ``exclude_chunk_ids`` after
+        # the lookup so siblings remain visible in the parent. The dict
+        # is keyed by identity (membership test is key-based), so a
+        # ``None`` value still counts as "already looked up" and avoids
+        # repeating the backend fetch.
+        seen_parents: Dict[ParentIdentity, Optional[Dict[str, Any]]] = {}
+
+        def _get_or_build_parent(
+            parent_identity: ParentIdentity,
+        ) -> Optional[Dict[str, Any]]:
+            if parent_identity not in seen_parents:
+                seen_parents[parent_identity] = self.reconstruct_parent_context(
+                    parent_identity
+                )
+            return seen_parents[parent_identity]
 
         enriched_results = []
         for result in results:
             chunk = result.document
             parent_identity = self.get_parent_identity(chunk)
+            raw_parent = _get_or_build_parent(parent_identity)
 
-            # Use cache or reconstruct
-            if parent_identity not in parent_cache:
-                parent_cache[parent_identity] = self.reconstruct_parent_context(
-                    parent_identity,
-                    exclude_sections={chunk.section}
-                )
-
-            parent_context = parent_cache[parent_identity]
+            # Strip the child chunk's text part out of the cached parent so
+            # the child never appears inside its own parent summary. This
+            # walks the cached ``text_parts`` once and is cheap.
+            parent_context = self._exclude_chunk_from_parent(
+                raw_parent, chunk.chunk_id
+            )
 
             # Enrich the chunk
             enriched = self.enrich_chunk_with_parent(
@@ -274,6 +405,39 @@ class ParentContextEnricher:
             enriched_results.append(enriched)
 
         return enriched_results
+
+    @staticmethod
+    def _exclude_chunk_from_parent(
+        parent_context: Optional[Dict[str, Any]],
+        chunk_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a shallow copy of ``parent_context`` with ``chunk_id`` removed.
+
+        Operates on the cached text_parts and chunks list (when present)
+        so multiple children of the same parent each see an honest
+        summary. If the parent context is ``None`` or has no parts, the
+        input is returned unchanged.
+        """
+        if not parent_context or not chunk_id:
+            return parent_context
+
+        text_parts = parent_context.get("text_parts") or []
+        filtered_parts = [
+            part for part in text_parts if part.get("chunk_id") != chunk_id
+        ]
+        if len(filtered_parts) == len(text_parts):
+            # No parts carried a chunk_id, but legacy entries may still
+            # represent the child. The chunker only writes ``chunk_id``
+            # for sub-section children, so this branch is a no-op for
+            # most flows. Return the original context untouched.
+            return parent_context
+
+        # Build a shallow copy so the cached parent is not mutated for
+        # other children that share the cache.
+        new_context = dict(parent_context)
+        new_context["text_parts"] = filtered_parts
+        new_context["num_chunks"] = len(filtered_parts)
+        return new_context
 
     def get_all_parents_in_document(
         self,

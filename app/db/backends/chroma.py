@@ -194,7 +194,7 @@ class ChromaDatabase(VectorDatabase):
 
                 # Handle embeddings - ChromaDB may return numpy arrays
                 embedding: List[float] = []
-                if results['embeddings'] and i < len(results['embeddings'][0]):
+                if results['embeddings'] is not None and i < len(results['embeddings'][0]):
                     emb = results['embeddings'][0][i]
                     embedding = [] if emb is None else emb.tolist() if not isinstance(emb, Sequence) else list(emb)
 
@@ -263,7 +263,7 @@ class ChromaDatabase(VectorDatabase):
                 return []
             
             metadata = results['metadatas'][0] if results['metadatas'] else {}
-            embedding = results['embeddings'][0] if results['embeddings'] else None
+            embedding = results['embeddings'][0] if results['embeddings'] is not None and len(results['embeddings']) > 0 else None
             text = results['documents'][0] if results['documents'] else ''
             
             return [build_document(metadata, results['ids'][0], embedding, text)]
@@ -297,7 +297,7 @@ class ChromaDatabase(VectorDatabase):
                         break
                     
                     metadata = results['metadatas'][i] if results['metadatas'] and i < len(results['metadatas']) else {}
-                    embedding = results['embeddings'][i] if results['embeddings'] and i < len(results['embeddings']) else None
+                    embedding = results['embeddings'][i] if results['embeddings'] is not None and i < len(results['embeddings']) else None
                     text = results['documents'][i] if results['documents'] and i < len(results['documents']) else ''
                     
                     documents.append(build_document(metadata, doc_id_val, embedding, text))
@@ -475,7 +475,7 @@ class ChromaDatabase(VectorDatabase):
         # Build search text from text + metadata
         search_parts = [text_lower]
         for key in [
-            "canonical_name",
+            "display_name",
             "entity_name",
             "substance_name",
             "chunk_type",
@@ -525,7 +525,7 @@ class ChromaDatabase(VectorDatabase):
         scores documents by how many example keys matched.
 
         Args:
-            example: Metadata dict to match (e.g. {"canonical_name": "Aspirin"})
+            example: Metadata dict to match (e.g. {"display_name": "Aspirin"})
             top_k: Maximum results
             mode: 'match' (all keys), 'contains' (any key), or 'nested'
 
@@ -607,7 +607,7 @@ class ChromaDatabase(VectorDatabase):
         4. structure                — 10%
         5. systematic_names         —  8%
         6. official_names           —  5%
-        7. canonical_name           —  5%
+        7. display_name             —  5%
         8. classifications          —  3%
         9. all_codes, other_names   —  2% each
         """
@@ -621,7 +621,7 @@ class ChromaDatabase(VectorDatabase):
             "structure": 0.10,
             "systematic_names": 0.08,
             "official_names": 0.05,
-            "canonical_name": 0.05,
+            "display_name": 0.06,
             "classifications": 0.03,
             "all_codes": 0.02,
             "other_names": 0.02,
@@ -640,7 +640,7 @@ class ChromaDatabase(VectorDatabase):
             doc_val = doc_metadata[key]
             ks = 0.0
 
-            if key in ("uuid", "approvalID", "canonical_name"):
+            if key in ("uuid", "approvalID", "display_name"):
                 ks = 1.0 if str(doc_val) == str(ex_val) else 0.0
 
             elif key in ("reliable_codes", "all_codes", "structure"):

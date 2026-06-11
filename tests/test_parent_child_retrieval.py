@@ -95,7 +95,7 @@ class TestParentContextEnricher(unittest.TestCase):
         self.assertEqual(root_section, "root")
 
     def test_extract_root_section_fallback(self):
-        """Test fallback to root when no section info available."""
+        """Test fallback to overview when no section info available."""
         chunk = VectorDocument(
             chunk_id="test_chunk",
             document_id=self.doc_id,
@@ -105,7 +105,7 @@ class TestParentContextEnricher(unittest.TestCase):
             metadata_json={},
         )
         root_section = self.enricher.extract_root_section(chunk)
-        self.assertEqual(root_section, "root")
+        self.assertEqual(root_section, "overview")
 
     def test_get_parent_identity(self):
         """Test getting parent identity from chunk."""
@@ -123,7 +123,7 @@ class TestParentContextEnricher(unittest.TestCase):
 
     def test_reconstruct_parent_context_success(self):
         """Test reconstructing parent context from chunks."""
-        # Create mock chunks
+        # Create mock chunks that all belong to the "root" parent
         chunks = [
             VectorDocument(
                 chunk_id=f"chunk_{i}",
@@ -131,7 +131,7 @@ class TestParentContextEnricher(unittest.TestCase):
                 section=f"section_{i}",
                 text=f"Text content for chunk {i}",
                 embedding=[float(i)] * 384,
-                metadata_json={"key": f"value_{i}"},
+                metadata_json={"root_section": "root", "key": f"value_{i}"},
                 source_url=f"source_{i}",
             )
             for i in range(3)
@@ -158,7 +158,7 @@ class TestParentContextEnricher(unittest.TestCase):
                 section=f"section_{i}",
                 text=f"Text {i}",
                 embedding=[float(i)] * 384,
-                metadata_json={},
+                metadata_json={"root_section": "root"},
             )
             for i in range(3)
         ]
@@ -319,7 +319,7 @@ class TestParentChildIntegration(unittest.TestCase):
                 embedding=[0.1] * 384,
                 metadata_json={
                     "root_section": "root",
-                    "canonical_name": "Acetylsalicylic Acid",
+                    "display_name": "Acetylsalicylic Acid",
                 },
                 source_url="source_root",
             ),
@@ -371,6 +371,344 @@ class TestParentChildIntegration(unittest.TestCase):
         self.assertIn("parent_context", enriched)
         self.assertEqual(enriched["parent_context"]["num_chunks"], 2)
         self.assertIn("parent_text_summary", enriched)
+
+
+class TestParentEnricherMetricsAndTruncation(unittest.TestCase):
+    """Tests for enricher-level metrics and parent-text truncation flag."""
+
+    def setUp(self):
+        """Set up test fixtures with a real InMemoryMetrics instance."""
+        from app.observability import InMemoryMetrics
+
+        self.mock_db = MagicMock()
+        self.metrics = InMemoryMetrics()
+        self.enricher = ParentContextEnricher(self.mock_db, metrics=self.metrics)
+        self.doc_id = uuid4()
+
+    def test_reconstruct_increments_count_and_latency(self):
+        """Each reconstruct call must increment count and observe latency."""
+        self.mock_db.get_documents.return_value = [
+            VectorDocument(
+                chunk_id="c1",
+                document_id=self.doc_id,
+                section="names",
+                text="name data",
+                embedding=[0.1] * 384,
+                metadata_json={"root_section": "root"},
+            ),
+        ]
+        parent_identity = ParentIdentity(
+            document_id=self.doc_id, root_section="root"
+        )
+        self.enricher.reconstruct_parent_context(parent_identity)
+
+        snap = self.metrics.snapshot()
+        self.assertEqual(snap["counters"].get("parent_rebuild.count"), 1)
+        self.assertGreaterEqual(
+            snap["latencies"]
+            .get("parent_rebuild.latency_ms", {})
+            .get("count", 0),
+            1,
+        )
+
+    def test_enrich_search_results_dedups_shared_parents(self):
+        """Shared parent identities are reconstructed only once per call."""
+        from app.models import DBQueryResult
+
+        chunks = [
+            VectorDocument(
+                chunk_id=f"chunk_{i}",
+                document_id=self.doc_id,
+                section=f"section_{i}",
+                text=f"Text {i}",
+                embedding=[float(i)] * 384,
+                metadata_json={"root_section": "root"},
+            )
+            for i in range(3)
+        ]
+        # Two results share a parent, the third is unique
+        results = [
+            DBQueryResult(document=chunks[0], score=0.9),
+            DBQueryResult(document=chunks[1], score=0.8),
+        ]
+
+        parent_context = {
+            "parent_identity": {
+                "document_id": str(self.doc_id),
+                "root_section": "root",
+            },
+            "num_chunks": 1,
+            "sections_included": ["section_0"],
+            "text_parts": [
+                {"section": "section_0", "text": "Text 0", "source_url": "src"}
+            ],
+        }
+        self.enricher.reconstruct_parent_context = Mock(
+            return_value=parent_context
+        )
+
+        self.enricher.enrich_search_results(results)
+
+        # Same parent identity (doc, root) appears twice -> only 1 rebuild.
+        self.assertEqual(
+            self.enricher.reconstruct_parent_context.call_count, 1
+        )
+
+    def test_truncation_flag_set_when_parent_text_exceeds_limit(self):
+        """Aggregated parent text longer than the limit must set the flag."""
+        chunk = VectorDocument(
+            chunk_id="query_chunk",
+            document_id=self.doc_id,
+            section="query",
+            text="query text",
+            embedding=[0.1] * 384,
+            metadata_json={},
+        )
+        # Build a parent context with text parts that exceed a small limit
+        long_text = "x" * 600
+        parent_context = {
+            "parent_identity": {
+                "document_id": str(self.doc_id),
+                "root_section": "root",
+            },
+            "num_chunks": 2,
+            "sections_included": ["section_0", "section_1"],
+            "text_parts": [
+                {"section": "section_0", "text": long_text, "source_url": "src"},
+                {"section": "section_1", "text": long_text, "source_url": "src"},
+            ],
+        }
+
+        enriched = self.enricher.enrich_chunk_with_parent(
+            chunk,
+            parent_context=parent_context,
+            include_parent_text=True,
+            parent_text_limit=200,
+        )
+
+        self.assertTrue(enriched.get("parent_text_truncated"))
+        self.assertEqual(enriched.get("parent_text_truncated_chars"), 200)
+        snap = self.metrics.snapshot()
+        self.assertGreaterEqual(
+            snap["counters"].get("parent_text.truncated", 0), 1
+        )
+
+    def test_truncation_flag_absent_when_under_limit(self):
+        """No truncation flag when aggregated text fits within the limit."""
+        chunk = VectorDocument(
+            chunk_id="query_chunk",
+            document_id=self.doc_id,
+            section="query",
+            text="query text",
+            embedding=[0.1] * 384,
+            metadata_json={},
+        )
+        parent_context = {
+            "parent_identity": {
+                "document_id": str(self.doc_id),
+                "root_section": "root",
+            },
+            "num_chunks": 1,
+            "sections_included": ["section_0"],
+            "text_parts": [
+                {"section": "section_0", "text": "short text", "source_url": "src"}
+            ],
+        }
+        enriched = self.enricher.enrich_chunk_with_parent(
+            chunk, parent_context=parent_context, include_parent_text=True
+        )
+        self.assertNotIn("parent_text_truncated", enriched)
+        self.assertIn("parent_text_summary", enriched)
+
+
+class TestBackendSectionFilterAndExclusion(unittest.TestCase):
+    """Tests that the enricher pushes the section filter to the backend
+    and excludes the child by chunk_id, not by section name.
+    """
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.mock_db = MagicMock()
+        self.enricher = ParentContextEnricher(self.mock_db)
+        self.doc_id = uuid4()
+
+    def test_reconstruct_passes_sections_and_limit_to_backend(self):
+        """The backend must receive a sections list and a limit."""
+        from app.services.chunker import sections_in_root
+
+        chunks = [
+            VectorDocument(
+                chunk_id=f"chunk_{i}",
+                document_id=self.doc_id,
+                section=("names" if i == 0 else "codes"),
+                text=f"text {i}",
+                embedding=[float(i)] * 384,
+                metadata_json={"root_section": "names" if i == 0 else "codes"},
+            )
+            for i in range(2)
+        ]
+        self.mock_db.get_documents.return_value = chunks
+
+        parent_identity = ParentIdentity(
+            document_id=self.doc_id, root_section="names"
+        )
+        self.enricher.reconstruct_parent_context(parent_identity)
+
+        # Inspect the call arguments: sections= must include the root
+        # section name, limit= must be a positive int.
+        call = self.mock_db.get_documents.call_args
+        self.assertIsNotNone(call, "Expected get_documents to be called")
+        kwargs = call.kwargs
+        self.assertEqual(kwargs.get("substance_uuid"), self.doc_id)
+        self.assertIn("names", kwargs.get("sections") or [])
+        self.assertIsInstance(kwargs.get("limit"), int)
+        self.assertGreater(kwargs["limit"], 0)
+        # And the helper that drives the filter must agree.
+        self.assertIn("names", sections_in_root("names"))
+
+    def test_reconstruct_falls_back_when_backend_rejects_kwargs(self):
+        """A backend that doesn't accept sections/limit must still work."""
+        legacy_db = MagicMock()
+        legacy_db.get_documents.side_effect = TypeError(
+            "get_documents() got an unexpected keyword argument 'sections'"
+        )
+        # Second call (fallback) returns chunks
+        legacy_db.get_documents.side_effect = [
+            TypeError("nope"),
+            [
+                VectorDocument(
+                    chunk_id="c1",
+                    document_id=self.doc_id,
+                    section="names",
+                    text="data",
+                    embedding=[0.1] * 384,
+                    metadata_json={"root_section": "names"},
+                )
+            ],
+        ]
+        enricher = ParentContextEnricher(legacy_db)
+        parent_identity = ParentIdentity(
+            document_id=self.doc_id, root_section="names"
+        )
+        context = enricher.reconstruct_parent_context(parent_identity)
+        self.assertIsNotNone(context)
+        self.assertEqual(context["num_chunks"], 1)
+
+    def test_child_excluded_by_chunk_id_not_section(self):
+        """Siblings in the same section as the child must still appear."""
+        # Two siblings in the "names" section, plus the child chunk.
+        siblings = [
+            VectorDocument(
+                chunk_id="names_batch",
+                document_id=self.doc_id,
+                section="names",
+                text="names batch",
+                embedding=[0.1] * 384,
+                metadata_json={"root_section": "names"},
+            ),
+            VectorDocument(
+                chunk_id="names_atomic_0",
+                document_id=self.doc_id,
+                section="names",
+                text="atomic 0",
+                embedding=[0.2] * 384,
+                metadata_json={"root_section": "names"},
+            ),
+        ]
+        child = VectorDocument(
+            chunk_id="names_atomic_1",
+            document_id=self.doc_id,
+            section="names",
+            text="atomic 1",
+            embedding=[0.3] * 384,
+            metadata_json={"root_section": "names"},
+        )
+        self.mock_db.get_documents.return_value = siblings + [child]
+
+        # Direct call with chunk_id exclusion: only the child is dropped.
+        parent_identity = ParentIdentity(
+            document_id=self.doc_id, root_section="names"
+        )
+        ctx = self.enricher.reconstruct_parent_context(
+            parent_identity, exclude_chunk_ids={"names_atomic_1"}
+        )
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx["num_chunks"], 2)
+
+        # Legacy section exclusion would drop ALL names chunks.
+        ctx_legacy = self.enricher.reconstruct_parent_context(
+            parent_identity, exclude_sections={"names"}
+        )
+        self.assertIsNone(ctx_legacy)
+
+    def test_enrich_search_results_uses_cached_parent_and_excludes_child(self):
+        """Within a batch, multiple children share a parent via cache."""
+        from app.models import DBQueryResult
+
+        # Mock reconstruct_parent_context to return the same context every
+        # call so the cache hit/miss behaviour can be observed.
+        sample_parent = {
+            "parent_identity": {
+                "document_id": str(self.doc_id),
+                "root_section": "names",
+            },
+            "num_chunks": 2,
+            "sections_included": ["names"],
+            "text_parts": [
+                {
+                    "chunk_id": "names_batch",
+                    "section": "names",
+                    "text": "names batch",
+                    "source_url": "src",
+                },
+                {
+                    "chunk_id": "names_atomic_0",
+                    "section": "names",
+                    "text": "atomic 0",
+                    "source_url": "src",
+                },
+            ],
+        }
+        self.enricher.reconstruct_parent_context = Mock(
+            return_value=sample_parent
+        )
+
+        # Two child chunks: only the second should be excluded by chunk_id.
+        child_0 = VectorDocument(
+            chunk_id="names_batch",
+            document_id=self.doc_id,
+            section="names",
+            text="names batch",
+            embedding=[0.1] * 384,
+            metadata_json={"root_section": "names"},
+        )
+        child_1 = VectorDocument(
+            chunk_id="names_atomic_0",
+            document_id=self.doc_id,
+            section="names",
+            text="atomic 0",
+            embedding=[0.2] * 384,
+            metadata_json={"root_section": "names"},
+        )
+        results = [
+            DBQueryResult(document=child_0, score=0.9),
+            DBQueryResult(document=child_1, score=0.8),
+        ]
+        enriched = self.enricher.enrich_search_results(results)
+
+        # Both children share the same parent identity, so 1 miss + 1 hit.
+        self.assertEqual(
+            self.enricher.reconstruct_parent_context.call_count, 1
+        )
+        # First child: its own chunk_id is removed from the cached parent,
+        # so the remaining part is "atomic 0".
+        first_summary = enriched[0].get("parent_text_summary", "")
+        self.assertIn("atomic 0", first_summary)
+        self.assertNotIn("names batch", first_summary)
+        # Second child: its own chunk_id is removed; "names batch" remains.
+        second_summary = enriched[1].get("parent_text_summary", "")
+        self.assertIn("names batch", second_summary)
+        self.assertNotIn("atomic 0", second_summary)
 
 
 if __name__ == "__main__":

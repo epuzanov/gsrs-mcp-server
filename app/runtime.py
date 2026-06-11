@@ -59,9 +59,16 @@ class ServerRuntime:
 
     @property
     def parent_enricher(self) -> ParentContextEnricher:
-        """Get or create the parent context enricher."""
+        """Get or create the parent context enricher.
+
+        The enricher shares the runtime's ``InMemoryMetrics`` instance so
+        that rebuild latency and truncation counters show up in the same
+        ``/readyz`` payload as the rest of the tool telemetry.
+        """
         if self._parent_enricher is None:
-            self._parent_enricher = ParentContextEnricher(self.vector_db)
+            self._parent_enricher = ParentContextEnricher(
+                self.vector_db, metrics=self.metrics
+            )
         return self._parent_enricher
 
     @property
@@ -313,15 +320,11 @@ class ServerRuntime:
             self.chunker = SubstanceChunker(
                 class_=VectorDocument,
                 config=ChunkerConfig(
-                    name_batch_size=self.settings.chunker_name_batch_size,
                     emit_atomic_name_chunks=self.settings.chunker_emit_atomic_name_chunks,
                     emit_sequence_segments=self.settings.chunker_emit_sequence_segments,
-                    max_sequence_segment_len=self.settings.chunker_max_sequence_segment_len,
                     emit_full_sequence_in_text=self.settings.chunker_emit_full_sequence_in_text,
                     include_admin_validation_notes=self.settings.chunker_include_admin_validation_notes,
-                    include_reference_index_chunk=self.settings.chunker_include_reference_index_chunk,
                     include_classification_chunk=self.settings.chunker_include_classification_chunk,
-                    include_grouped_relationship_summaries=self.settings.chunker_include_grouped_relationship_summaries,
                 ),
             )
             self._set_component("chunker", required=False, ready=True)

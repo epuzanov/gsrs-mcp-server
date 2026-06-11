@@ -9,15 +9,42 @@ This implementation provides parent-child retrieval using **virtual parent recon
 ### Parent Identity
 A parent is uniquely identified by:
 - **document_id**: The UUID of the substance/document
-- **root_section**: The topmost section within the document
+- **root_section**: The chunk's *top-level* section (e.g. `definitions`, `codes`, `names`, `overview`, `tags`)
 
-Example: `ParentIdentity(document_id=uuid(...), root_section="root")`
+Example: `ParentIdentity(document_id=uuid(...), root_section="definitions")`.
+
+The chunker stamps every chunk's `metadata_json` with `root_section`. For
+top-level sections (`overview`, `names`, `codes`, `definitions`, `tags`,
+`references`, `relationships`, `properties`) the `root_section` is the
+section itself. For sub-sections the chunker also records a `hierarchy`
+pointer so the enricher can find the right parent without having to
+duplicate the section-group table.
+
+The current section layout:
+
+| Root section | Sub-section chunks |
+| --- | --- |
+| `overview` | *(identity only — see Overview chunk)* |
+| `names` | `names` |
+| `codes` | `identifiers` (non-classification codes), `classifications` |
+| `definitions` | per-class sub-sections (`chemical`, `protein`, `nucleicacid`, `polymer`, `structurallydiverse`, `mixture`, `specifiedsubstance*`), plus `sequence`, `composition`, `modifications` |
+| `tags` | `tags` |
+| `references` | `references` |
+| `relationships` | `relationships` |
+| `properties` | `properties` |
+
+The Overview chunk is intentionally minimal — it carries only the
+substance's high-level identity (display name, class, definition type,
+status, approval ID, version). Names, codes, structure, and moieties are
+emitted in their own chunk sections and surfaced via parent-child
+retrieval.
 
 ### Virtual Parent Reconstruction
 Instead of storing explicit parent-child relationships:
 1. Parent context is **reconstructed on-demand** by loading all chunks sharing the same `(document_id, root_section)`
 2. Chunks are enriched with this parent context
-3. This provides broader document context without requiring schema modifications
+3. This provides focused, small-to-big context (the section that contains
+   the child) without requiring schema modifications
 
 ## Architecture
 
@@ -27,7 +54,7 @@ Instead of storing explicit parent-child relationships:
 Main service class that handles virtual parent reconstruction:
 
 ```python
-enricher = ParentContextEnricher(vector_db)
+enricher = ParentContextEnricher(vector_db, metrics=runtime.metrics)
 
 # Extract root section from a chunk
 root_section = enricher.extract_root_section(chunk)
@@ -61,14 +88,20 @@ docs = vector_db.get_documents_by_section_and_substance(
 - **PGVector**: Optimized SQL query for filtered retrieval
 - **ChromaDB**: Filter-based query for filtered retrieval
 
-#### 4. VectorDatabaseService Integration
-The service layer exposes the parent enricher:
+#### 4. ServerRuntime Integration
+The enricher is exposed on the `ServerRuntime` instance, not on the
+`VectorDatabaseService` itself. Application code and MCP tools access it
+through `runtime.parent_enricher` (a lazily-constructed property):
 
 ```python
-# Access parent context enricher
-enricher = vector_db.parent_enricher
+# Access the parent context enricher from runtime
+enricher = runtime.parent_enricher
 enriched_results = enricher.enrich_search_results(results)
 ```
+
+The enricher shares the runtime's `InMemoryMetrics`, so the rebuild
+latency, cache hit/miss, and truncation counters are visible in the same
+`/readyz` payload as the rest of the tool telemetry.
 
 ## MCP Tools
 
@@ -124,15 +157,17 @@ Sections Included: root, names, codes, references
 ## How It Works
 
 ### Step 1: Extract Root Section
-When a chunk is received, the enricher determines its root section:
+When a chunk is received, the enricher determines its root section. The
+priority order is:
 
-```python
-# Priority order for determining root section:
-1. Explicit "root_section" in metadata
-2. "hierarchy.parent_section" in metadata
-3. Section field value (if it's "root")
-4. Fallback to "root"
-```
+1. Explicit `root_section` in chunk metadata (stamped by the chunker).
+2. `hierarchy.parent_section` in chunk metadata (also stamped by the
+   chunker for sub-section chunks).
+3. The chunk's `section` field, used as-is for legacy chunks that
+   pre-date the new chunker behavior.
+4. Fallback to `"overview"`.
+
+For chunks produced by the current chunker, the answer is always step 1.
 
 ### Step 2: Identify Parent Identity
 Parent is identified by `(document_id, root_section)`:
@@ -145,23 +180,29 @@ parent_identity = ParentIdentity(
 ```
 
 ### Step 3: Reconstruct Parent Context
-Load all chunks with same parent identity:
+Load all chunks for the document and filter to those whose root section
+matches the parent's. The enricher excludes the child chunk's own
+`section` so the summary does not echo the chunk text.
 
 ```python
 # Get all chunks for this document
-all_chunks = db.get_documents_by_substance(parent_identity.document_id)
+all_chunks = db.get_documents(substance_uuid=parent_identity.document_id)
 
-# Filter by root section
+# Filter by root section, excluding the child chunk's own section
 parent_chunks = [
-    c for c in all_chunks 
+    c for c in all_chunks
     if extract_root_section(c) == parent_identity.root_section
+    and c.section not in exclude_sections
 ]
 
 # Build parent context from parent_chunks
 ```
 
 ### Step 4: Enrich Observations
-Augment child chunks with parent information:
+Augment child chunks with parent information. The enriched payload
+includes a `parent_text_truncated: true` flag whenever the aggregated
+parent text was cut to fit the limit, plus the truncation point in
+`parent_text_truncated_chars`:
 
 ```python
 enriched = {
@@ -173,11 +214,13 @@ enriched = {
     },
     "parent_context": {
         "num_chunks": 5,
-        "sections_included": ["root", "names", "codes"],
+        "sections_included": ["definitions", "names", "codes"],
         "text_parts": [...],  # Parts from all parent chunks
         "metadata_unified": {...}
     },
-    "parent_text_summary": "Aggregated text from parent..."
+    "parent_text_summary": "Aggregated text from parent...",
+    "parent_text_truncated": True,           # optional
+    "parent_text_truncated_chars": 1000,     # optional
 }
 ```
 
@@ -187,13 +230,28 @@ enriched = {
 - **No schema changes**: Uses existing chunk structure
 - **No reindexing**: Existing vectors remain valid
 - **On-demand reconstruction**: Parent context built only when needed
-- **Caching in results**: Parent contexts cached across multiple results
+- **Dedup within a call**: Parent contexts are deduped across multiple
+  results in a single call (in-process dict, keyed on `ParentIdentity`)
+
+### Observability
+The enricher shares the runtime's `InMemoryMetrics`. Inspect counters
+and latencies via `GET /readyz`:
+
+- `parent_rebuild.count` (counter)
+- `parent_rebuild.latency_ms` (histogram)
+- `parent_text.truncated` (counter, incremented when aggregate text is
+  cut to fit the limit)
 
 ### When to Add Dedicated Storage
-Measure performance and consider dedicated parent storage if:
-1. Parent reconstruction is frequently accessed
-2. Document sizes are very large (>1000 chunks)
-3. Latency requirements are strict (<100ms)
+Promote the parent context to a dedicated `parent_chunks` table (Option 1
+below) when **both** of the following are true on production traffic:
+
+1. `parent_rebuild.latency_ms` p95 is above your SLO (suggested
+   threshold: **200ms**), and
+2. Substance documents routinely have **>1000** chunks.
+
+These are concrete operational signals that the virtual approach is no
+longer paying for itself.
 
 ## Data Flow
 
@@ -241,7 +299,7 @@ parent_context = await get_parent_context(
 ### Example 3: Direct Service Usage
 ```python
 # In application code
-enricher = runtime.vector_db.parent_enricher
+enricher = runtime.parent_enricher
 
 # Get parent for a chunk
 parent_identity = enricher.get_parent_identity(chunk)
@@ -341,16 +399,46 @@ The implementation gracefully handles:
 
 ## Integration Points
 
-1. **Vector Database Service**: `vector_db.parent_enricher` property
-2. **MCP Tools**: `rag_query_with_parent_context`, `get_parent_context`
+1. **ServerRuntime**: `runtime.parent_enricher` property (lazily created
+   on first access; shares the runtime's `InMemoryMetrics`).
+2. **MCP Tools**: `rag_query_with_parent_context`, `get_parent_context`.
 3. **Backend Queries**: Optimized queries for filtered retrieval
-4. **Existing RAG Flow**: Non-breaking additions to existing tools
+   (`vector_db.get_documents(substance_uuid=..., sections=[...], limit=...)`).
+4. **Existing RAG Flow**: Non-breaking additions to existing tools.
+
+## Re-ingesting Existing Data
+
+Existing data ingested before the new chunker will have every chunk
+stamped with `root_section="overview"`, which makes the entire substance
+a single parent. To take advantage of the new hierarchical root sections,
+re-ingest previously loaded substances.
+
+The procedure is:
+
+1. Stop the MCP server.
+2. Run the bulk re-ingest helper:
+   ```bash
+   python scripts/reingest_for_hierarchy.py --limit 100
+   ```
+   Add `--dry-run` to preview the work first. The script iterates the
+   distinct `document_id` values in the vector store, deletes each
+   substance's chunks, and re-chunks them so the new `root_section` and
+   `hierarchy` metadata is stamped.
+3. Start the MCP server.
+4. Confirm the new behavior with:
+   ```bash
+   curl -s http://localhost:8000/readyz | jq .metrics.counters
+   ```
+   You should see `parent_rebuild.count` increase on subsequent
+   `rag_query_with_parent_context` calls.
 
 ## Migration Path
 
-No migration required:
-1. All changes are additive
-2. Existing `rag_query` tool unchanged
-3. Existing database schema unchanged
-4. New tools available immediately upon deployment
-5. Can be enabled gradually for specific use cases
+No schema migration is required for the basic flow. All changes are
+additive: existing `rag_query` and `rag_ingest` tools are unchanged,
+the database schema is unchanged, and new tools are available
+immediately.
+
+To realize the full benefit of the new hierarchical root sections, run
+the [re-ingest procedure](#re-ingesting-existing-data) against existing
+data. This is opt-in and can be staged per substance.

@@ -66,7 +66,7 @@ class VectorDocument(Base):
     )
 
     # Metadata containing all element attributes from gsrs.model:
-    # - canonical_name: preferred substance name
+    # - display_name: preferred substance name
     # - chunk_type: type of chunk (overview, name, code, etc.)
     # - hierarchy: parent context information
     # - additional gsrs.model metadata fields
@@ -115,7 +115,7 @@ class VectorDocument(Base):
             "search_tsv": sql_func.to_tsvector(
                 "english", " ".join([
                     self.search_text if self.search_text else "",
-                    self.metadata_json["canonical_name"] if self.metadata_json.get("canonical_name") else "",
+                    self.metadata_json["display_name"] if self.metadata_json.get("display_name") else "",
                     self.metadata_json["chunk_type"] if self.metadata_json.get("chunk_type") else "",
                     self.section if self.section else "",
                 ])
