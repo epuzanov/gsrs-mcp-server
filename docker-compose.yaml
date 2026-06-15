@@ -1,18 +1,25 @@
 services:
+  # ---------------------------------------------------------------------------
+  # All values come from the .env file at the project root (committed template
+  # is .env.example; copy it with `cp .env.example .env`). Every var below has
+  # a sane in-yaml default so the file still works without .env, but
+  # production deployments should drive every secret via .env.
+  # ---------------------------------------------------------------------------
+
   # PostgreSQL with pgvector extension (Production Database)
-  postgres:
+  vectordb:
     image: pgvector/pgvector:pg18
     container_name: gsrs-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gsrs_secure_password_change_me}
-      POSTGRES_DB: gsrs_mcp
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d gsrs_mcp"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,46 +28,52 @@ services:
       - postgres
 
   # GSRS MCP Server API
-  mcp-server:
+  server:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: gsrs-mcp-server
+    # Every env var the app reads lives here. Unset keys become empty
+    # strings and app/config.py falls back to its in-code defaults.
+    # MCP_PORT is also referenced in the ports: block below, so it must
+    # be set in .env.
     environment:
-      # Database URL - scheme determines backend automatically:
-      # - PostgreSQL: postgresql://user:pass@host:port/dbname
-      # - ChromaDB: chroma://./chroma_data/chunks
-      # For PostgreSQL (production):
-      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-gsrs_secure_password_change_me}@postgres:5432/gsrs_mcp}
-      # For ChromaDB (development - uncomment to use):
-      # DATABASE_URL: chroma://./chroma_data/chunks
-      # Embedding API Configuration
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
-      EMBEDDING_URL: ${EMBEDDING_URL:-https://api.openai.com/v1/embeddings}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
-      # Authentication (HTTP Bearer token for the /mcp endpoint)
-      MCP_PASSWORD: ${MCP_PASSWORD:-admin123}
-      # MCP bind configuration
-      MCP_API: ${MCP_API:-0.0.0.0}
-      MCP_PORT: ${MCP_PORT:-8000}
-      DEFAULT_TOP_K: 5
-      # GSRS Official API Configuration
-      GSRS_API_URL: ${GSRS_API_URL:-https://gsrs.ncats.nih.gov/api/v1}
-      GSRS_API_TIMEOUT: ${GSRS_API_TIMEOUT:-30}
-      GSRS_API_VERIFY_SSL: ${GSRS_API_VERIFY_SSL:-true}
-      GSRS_API_PUBLIC_ONLY: ${GSRS_API_PUBLIC_ONLY:-false}
-      # MCP Transport: "streamable-http" or "stdio"
-      MCP_TRANSPORT: streamable-http
+      DATABASE_URL: ${DATABASE_URL}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_URL: ${EMBEDDING_URL}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION}
+      EMBEDDING_VERIFY_SSL: ${EMBEDDING_VERIFY_SSL}
+      EMBEDDING_TIMEOUT: ${EMBEDDING_TIMEOUT}
+      EMBEDDING_MAX_RETRIES: ${EMBEDDING_MAX_RETRIES}
+      EMBEDDING_RETRY_BACKOFF_MS: ${EMBEDDING_RETRY_BACKOFF_MS}
+      CHUNKER_EMIT_ATOMIC_NAME_CHUNKS: ${CHUNKER_EMIT_ATOMIC_NAME_CHUNKS}
+      CHUNKER_EMIT_SEQUENCE_SEGMENTS: ${CHUNKER_EMIT_SEQUENCE_SEGMENTS}
+      CHUNKER_EMIT_FULL_SEQUENCE_IN_TEXT: ${CHUNKER_EMIT_FULL_SEQUENCE_IN_TEXT}
+      CHUNKER_INCLUDE_ADMIN_VALIDATION_NOTES: ${CHUNKER_INCLUDE_ADMIN_VALIDATION_NOTES}
+      CHUNKER_INCLUDE_CLASSIFICATION_CHUNK: ${CHUNKER_INCLUDE_CLASSIFICATION_CHUNK}
+      MCP_TRANSPORT: ${MCP_TRANSPORT}
+      MCP_API: ${MCP_API}
+      MCP_PORT: ${MCP_PORT}
+      MCP_PASSWORD: ${MCP_PASSWORD}
+      DEFAULT_TOP_K: ${DEFAULT_TOP_K}
+      GSRS_API_URL: ${GSRS_API_URL}
+      GSRS_API_TIMEOUT: ${GSRS_API_TIMEOUT}
+      GSRS_API_VERIFY_SSL: ${GSRS_API_VERIFY_SSL}
+      GSRS_API_PUBLIC_ONLY: ${GSRS_API_PUBLIC_ONLY}
+      GSRS_API_MAX_RETRIES: ${GSRS_API_MAX_RETRIES}
+      GSRS_API_RETRY_BACKOFF_MS: ${GSRS_API_RETRY_BACKOFF_MS}
+      DEBUG_MODE: ${DEBUG_MODE}
+      STARTUP_VALIDATE_EXTERNAL: ${STARTUP_VALIDATE_EXTERNAL}
     ports:
-      - "8000:8000"
+      - "${MCP_PORT}:${MCP_PORT}"
     depends_on:
-      postgres:
+      vectordb:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/readyz"]
+      test: ["CMD", "curl", "-f", "http://localhost:${MCP_PORT}/readyz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -70,8 +83,80 @@ services:
       - postgres
       - chroma
 
+  # Caddy reverse proxy with automatic ACME (Let's Encrypt) certificates.
+  # Runs on its own profile so it can be enabled independently of the chosen
+  # database backend. All Caddy configuration is generated from environment
+  # variables on container start and written to /etc/caddy/Caddyfile. Caddy
+  # reads {$VAR:default} placeholders from the process environment natively,
+  # so the rendered config reflects whatever MCP_HOSTNAME / MCP_UPSTREAM /
+  # CADDY_ACME_CA are set to when the container boots.
+  #
+  #   MCP_HOSTNAME    - public DNS name resolving to this host; Caddy uses it
+  #                     to request a Let's Encrypt certificate via ACME.
+  #                     Port 80 and 443 must be reachable from the internet.
+  #   MCP_UPSTREAM    - upstream the proxy forwards to. Defaults to
+  #                     `mcp-server:8000` (docker-compose service hostname).
+  #   CADDY_ACME_CA   - optional. Set to the Let's Encrypt staging directory
+  #                     (https://acme-staging-v02.api.letsencrypt.org/directory)
+  #                     while testing to avoid rate limits.
+  #   CADDY_EMAIL     - optional. Contact email passed to the ACME provider.
+  httpd:
+    image: docker.io/library/caddy:2
+    container_name: gsrs-caddy
+    environment:
+      # Real literal values for the caddy container. Caddy reads them
+      # via its native {$VAR:default} placeholders in the Caddyfile
+      # below. The compose substitution `${VAR:-default}` lets the
+      # operator override via the shell env or .env file; the
+      # in-Caddyfile `{$VAR:default}` is a secondary fallback for when
+      # the env var is unset.
+      MCP_HOSTNAME: ${MCP_HOSTNAME}
+      MCP_UPSTREAM: ${MCP_UPSTREAM}
+      CADDY_ACME_CA: ${CADDY_ACME_CA}
+      CADDY_EMAIL: ${CADDY_EMAIL}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /data
+        cat > /data/Caddyfile <<'EOF'
+        {
+            acme_ca {$CADDY_ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+            email {$CADDY_EMAIL:admin@example.com}
+        }
+        {$MCP_HOSTNAME:gsrs.example.com} {
+            encode gzip zstd
+            reverse_proxy {$MCP_UPSTREAM:mcp-server:8000} {
+                header_up Host {host}
+                header_up X-Real-IP {remote_host}
+            }
+        }
+        EOF
+        exec caddy run --config /data/Caddyfile
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      # /data: persistent — holds the rendered Caddyfile, ACME account, and
+      # issued certificates. Survives container restarts.
+      - caddy_data:/data
+      # /config: ephemeral — Caddy's internal runtime cache, regenerated on
+      # each start. A tmpfs mount keeps it small and avoids tying it to a
+      # named volume.
+      - type: tmpfs
+        target: /config
+        tmpfs:
+          size: 16m
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - caddy
+
 volumes:
   postgres_data:
+  caddy_data:
 
 networks:
   default:

@@ -101,3 +101,14 @@ Generate a markdown summary from a local GSRS JSON file:
 ```bash
 python scripts/json2md.py substance.json substance.md
 ```
+
+## Deployment
+
+Two manifests ship in the repository root:
+
+- [`docker-compose.yaml`](docker-compose.yaml) — multi-service compose, suitable for a privileged host or a single-node rootful podman / docker setup.
+- [`podman-kube-play.yaml`](podman-kube-play.yaml) — single-pod K8s manifest, intended for **`podman kube play` in rootless mode**. All env values live in a separate file, [`mcp-config.yaml`](mcp-config.yaml) (a `kind: ConfigMap gsrs-env` resource, generated from your project `.env`). The three containers pull them via `envFrom: configMapRef:`. Deploy with `podman kube play --configmap mcp-config.yaml podman-kube-play.yaml`. The full workflow is in the header comment of the manifest and in the deployment guide.
+
+For the rootless podman path (caddy publishes on `hostPort 8080` / `8443`,
+the host firewall forwards the standard `80` / `443`) see
+[`docs/guides/rootless-podman-deployment.md`](docs/guides/rootless-podman-deployment.md).

@@ -1,16 +1,61 @@
+# ============================================================================
+# GSRS MCP Server — single-pod Kubernetes manifest for rootless
+# `podman kube play` on Fedora / RHEL.
+# ============================================================================
+#
 # Build the application image first:
 #   podman build -t localhost/gsrs-mcp-server:latest .
 #
-# Edit the placeholder secrets below before starting the stack:
-#   POSTGRES_PASSWORD
-#   MCP_PASSWORD
-#   EMBEDDING_API_KEY
+# ----------------------------------------------------------------------------
+# Environment injection: external ConfigMap + --configmap flag
+# ----------------------------------------------------------------------------
+# All environment variables for the three containers (`vectordb`, `server`,
+# `httpd`) live in a separate `kind: ConfigMap` resource in
+# [`mcp-config.yaml`](mcp-config.yaml) (a sibling of this manifest). Each
+# container pulls them in via `envFrom: configMapRef: { name: gsrs-env }`
+# — no inline `env:` lists, no per-container duplication, no placeholders
+# in this file.
 #
-# Then start the stack:
-#   podman kube play podman-kube-play.yaml
+# Deployment workflow:
 #
-# Stop and remove it later with:
-#   podman kube down podman-kube-play.yaml
+#   podman kube play --configmap mcp-config.yaml podman-kube-play.yaml
+#
+# `--configmap mcp-config.yaml` tells podman to load that file's
+# `kind: ConfigMap` resources into the pod and use them as the env
+# source for any container that references them by name. The
+# `mcp-config.yaml` file itself is generated from the project root
+# `.env` (see the deployment guide for the exact steps).
+#
+# Why a separate ConfigMap file and not inline `env:` + envsubst?
+#   * The previous design used `value: "${VAR}"` inline. That works for
+#     containers that read their env directly, but breaks for the caddy
+#     container: caddy reads env at startup but its Caddyfile uses native
+#     `{$VAR:default}` substitution, and `envsubst` mangles that syntax
+#     (it sees `${VAR:default}` inside the Caddyfile and substitutes the
+#     var name, leaving only `:<default>` and breaking the Caddyfile).
+#   * A separate `mcp-config.yaml` keeps env values out of this
+#     manifest, avoids the envsubst-vs-caddy incompatibility, and
+#     makes the env contract a single, greppable file. The caddy
+#     container's Caddyfile keeps its `{$VAR:default}` placeholders
+#     intact because they live in a heredoc inside the caddy
+#     container's `command:` (not in the manifest's YAML), and caddy
+#     reads the resolved env vars at container startup.
+#
+# Vars consumed by `app/config.py` (`EMBEDDING_*`, `MCP_*`, `GSRS_API_*`,
+# `CHUNKER_*`, `DEBUG_MODE`, `STARTUP_VALIDATE_EXTERNAL`, ...) are
+# OPTIONAL in `.env` — unset keys become empty strings in the
+# ConfigMap, and `app/config.py` falls back to its in-code defaults.
+# Vars consumed by the postgres image (`POSTGRES_*`) and the caddy
+# image (`MCP_HOSTNAME`, `MCP_UPSTREAM`, `CADDY_*`) MUST be set in
+# `.env` for the stack to function; the Caddyfile's `{$VAR:default}`
+# placeholders act as a final safety net.
+#
+# The caddy defaults baked into the Caddyfile below
+# (`gsrs.example.com` hostname, Let's Encrypt production CA,
+# `admin@example.com` email) are safe-but-useless placeholders. To
+# override them, edit `.env` (and re-render `mcp-config.yaml`); the
+# ConfigMap picks up the change on the next `podman kube play`.
+# ----------------------------------------------------------------------------
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -36,6 +81,18 @@ spec:
 
 ---
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gsrs-caddy-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
 kind: Pod
 metadata:
   name: gsrs-mcp
@@ -43,61 +100,82 @@ metadata:
     app: gsrs-mcp-server
 spec:
   restartPolicy: Always
+  # Inject every key from the gsrs-env ConfigMap as an environment
+  # variable into each container. The containers are free to read
+  # only the subset they care about; the others are harmless noise.
+  # There is intentionally no per-container env: list — the whole
+  # point of the ConfigMap is to put the env contract in one place.
   containers:
-    - name: postgres
+    - name: vectordb
       image: docker.io/pgvector/pgvector:pg18
-      env:
-        - name: POSTGRES_USER
-          value: postgres
-        - name: POSTGRES_DB
-          value: gsrs_mcp
-        - name: POSTGRES_PASSWORD
-          value: change-me
+      envFrom:
+        - configMapRef:
+            name: vectordb-env
       volumeMounts:
         - name: postgres-data
           mountPath: /var/lib/postgresql
-    - name: mcp-server
+    - name: server
       image: localhost/gsrs-mcp-server:latest
       imagePullPolicy: Never
-      env:
-        - name: DATABASE_URL
-          value: postgresql://postgres:change-me@127.0.0.1:5432/gsrs_mcp
-        - name: MCP_TRANSPORT
-          value: streamable-http
-        - name: MCP_API
-          value: 0.0.0.0
-        - name: MCP_PORT
-          value: "8000"
-        - name: MCP_PASSWORD
-          value: change-me
-        - name: EMBEDDING_API_KEY
-          value: sk-your-embedding-key
-        - name: EMBEDDING_URL
-          value: https://api.openai.com/v1/embeddings
-        - name: EMBEDDING_MODEL
-          value: text-embedding-3-small
-        - name: EMBEDDING_DIMENSION
-          value: "1536"
-        - name: DEFAULT_TOP_K
-          value: "5"
-        - name: GSRS_API_URL
-          value: https://gsrs.ncats.nih.gov/api/v1
-        - name: GSRS_API_TIMEOUT
-          value: "30"
-        - name: GSRS_API_VERIFY_SSL
-          value: "true"
-        - name: GSRS_API_PUBLIC_ONLY
-          value: "false"
-        - name: DEBUG_MODE
-          value: "false"
-        - name: STARTUP_VALIDATE_EXTERNAL
-          value: "false"
+      envFrom:
+        - configMapRef:
+            name: server-env
+      # The container port is a literal 8000 to match the in-code
+      # MCP_PORT default. Change it here if you want a different host
+      # port, then mirror the change in .env's MCP_PORT.
       ports:
         - containerPort: 8000
           hostPort: 8000
       volumeMounts:
         - name: chroma-data
           mountPath: /app/chroma_data
+    - name: httpd
+      image: docker.io/library/caddy:2
+      # The caddy container reads MCP_HOSTNAME, MCP_UPSTREAM,
+      # CADDY_ACME_CA, and CADDY_EMAIL from the ConfigMap at
+      # startup. The Caddyfile below uses Caddy v2's native
+      # `{$VAR:default}` substitution syntax as a safety net for
+      # the case where one of these vars is unset. Caddy only
+      # falls back to the default when the env var is missing
+      # entirely, so an empty string in the ConfigMap would still
+      # produce an invalid config — keep them set in .env.
+      envFrom:
+        - configMapRef:
+            name: httpd-env
+      command:
+        - /bin/sh
+        - -c
+        - |
+          mkdir -p /data
+          cat > /data/Caddyfile <<'EOF'
+          {
+              acme_ca {$CADDY_ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+              email {$CADDY_EMAIL:admin@example.com}
+          }
+          {$MCP_HOSTNAME:gsrs.example.com} {
+              encode gzip zstd
+              reverse_proxy {$MCP_UPSTREAM:localhost:8000} {
+                  header_up Host {host}
+                  header_up X-Real-IP {remote_host}
+                  header_up X-Forwarded-For {remote_host}
+                  header_up X-Forwarded-Proto {scheme}
+              }
+          }
+          EOF
+          exec caddy run --config /data/Caddyfile
+      ports:
+        - containerPort: 80
+          hostPort: 8080
+        - containerPort: 443
+          hostPort: 8443
+      volumeMounts:
+        - name: caddy-data
+          mountPath: /data
+        - name: caddy-config-cache
+          mountPath: /config
+        - name: caddy-ca-bundle
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          subPath: ca-certificates.crt
   volumes:
     - name: postgres-data
       persistentVolumeClaim:
@@ -105,3 +183,13 @@ spec:
     - name: chroma-data
       persistentVolumeClaim:
         claimName: gsrs-chroma-data
+    - name: caddy-data
+      persistentVolumeClaim:
+        claimName: gsrs-caddy-data
+    - name: caddy-config-cache
+      emptyDir: {}
+    - name: caddy-ca-bundle
+      configMap:
+        name: httpd-ca-bundle
+        defaultMode: 420
+

@@ -17,6 +17,13 @@ build/
 .env
 .env.local
 
+# Environment ConfigMap. This file is the rendered view of `.env`
+# and contains real env values (POSTGRES_PASSWORD, EMBEDDING_API_KEY,
+# MCP_PASSWORD, etc.). Operators regenerate it locally from `.env`
+# before each deploy. Keep it out of source control so secrets do
+# not leak.
+mcp-config.yaml
+
 # IDE
 .idea/
 .vscode/
