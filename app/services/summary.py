@@ -156,6 +156,7 @@ def _format_codes(codes: list[Any]) -> list[str]:
             identifiers.append(row)
 
     md: list[str] = []
+    md += _section_header("Codes")
     if identifiers:
         md += _section_header("Identifiers", level=3)
         md += _format_table(identifiers, ["code_system", "code", "type", "comments"])
