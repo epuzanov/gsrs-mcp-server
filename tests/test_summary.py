@@ -42,10 +42,10 @@ class TestSubstanceSummary(unittest.TestCase):
         self.assertIn("**Approval ID:** R16CO5Y76E", markdown)
         self.assertIn("**Access:** Public", markdown)
         self.assertIn("## Structure", markdown)
-        self.assertIn("| Name | Type | Display Name | Preferred | Name Orgs | Domains | Languages |", markdown)
-        self.assertIn("| Aspirin | cn | yes | yes |  | drug | en |", markdown)
+        self.assertIn("| Name | Type | Display Name | Preferred | Name Orgs | Domains | Languages | Access |", markdown)
+        self.assertIn("| Aspirin | cn | yes | yes |  | drug | en | Public |", markdown)
         self.assertIn("## Identifiers", markdown)
-        self.assertIn("| CAS | 50-78-2 |  | primary |", markdown)
+        self.assertIn("| CAS | 50-78-2 |  | primary | Public |", markdown)
 
     def _load_example(self, filename: str) -> dict:
         root = os.path.dirname(os.path.dirname(__file__))
@@ -56,15 +56,24 @@ class TestSubstanceSummary(unittest.TestCase):
     def test_chemical_summary_renders_structure_and_codes(self):
         data = self._load_example("0103a288-6eb6-4ced-b13a-849cd7edf028.json")
         md = substance_to_markdown(data)
-        self.assertIn("## Structure", md)
+        self.assertIn("### Structure", md)
         self.assertIn("C13H18O2", md)
         self.assertIn("**Access:** Public", md)
-        self.assertIn("## Identifiers", md)
-        self.assertIn("## Classifications", md)
+        self.assertIn("### Identifiers", md)
+        self.assertIn("### Classifications", md)
         self.assertIn("FDA UNII", md)
         self.assertIn("WHO-ATC", md)
         self.assertIn("N02AJ19", md)
         self.assertIn("## Names", md)
+        self.assertIn("## References", md)
+        self.assertIn("| Access |", md)
+
+    def test_references_section_renders(self):
+        data = self._load_example("84be3229-7c19-4a9f-bafb-608832e61888.json")
+        md = substance_to_markdown(data)
+        self.assertIn("## References", md)
+        self.assertIn("| Citation | Doc Type | Public Domain | Tags | Access |", md)
+        self.assertIn("| Access |", md)
 
     def test_summary_shows_protected_when_access_present(self):
         data = self._load_example("d4ee19a6-a33f-4d37-bf05-5feeaa938b83.json")

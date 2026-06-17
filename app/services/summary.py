@@ -110,6 +110,7 @@ def _format_names(names: list[Any]) -> list[str]:
                     "name_orgs": ", ".join(orgs),
                     "domains": _join_values(entry.get("domains")),
                     "languages": _join_values(entry.get("languages")),
+                    "access": _format_access(entry.get("access")),
                 }
             )
         else:
@@ -122,10 +123,11 @@ def _format_names(names: list[Any]) -> list[str]:
                     "name_orgs": "",
                     "domains": "",
                     "languages": "",
+                    "access": "",
                 }
             )
     return _section_header("Names") + _format_table(
-        rows, ["name", "type", "display_name", "preferred", "name_orgs", "domains", "languages"]
+        rows, ["name", "type", "display_name", "preferred", "name_orgs", "domains", "languages", "access"]
     )
 
 
@@ -149,6 +151,7 @@ def _format_codes(codes: list[Any]) -> list[str]:
             "code": entry.get("code"),
             "type": entry.get("type"),
             "comments": entry.get("comments"),
+            "access": _format_access(entry.get("access")),
         }
         if is_classification:
             classifications.append(row)
@@ -159,12 +162,12 @@ def _format_codes(codes: list[Any]) -> list[str]:
     md += _section_header("Codes")
     if identifiers:
         md += _section_header("Identifiers", level=3)
-        md += _format_table(identifiers, ["code_system", "code", "type", "comments"])
+        md += _format_table(identifiers, ["code_system", "code", "type", "comments", "access"])
         md.append("")
     if classifications:
         md += _section_header("Classifications", level=3)
         md += _format_table(
-            classifications, ["code_system", "code", "type", "comments"]
+            classifications, ["code_system", "code", "type", "comments", "access"]
         )
         md.append("")
     return md
@@ -182,10 +185,11 @@ def _format_relationships(relationships: list[Any]) -> list[str]:
                 "type": entry.get("type"),
                 "related_substance": _resolve_substance_name(related),
                 "qualification": entry.get("qualification"),
+                "access": _format_access(entry.get("access")),
             }
         )
     return _section_header("Relationships") + _format_table(
-        rows, ["type", "related_substance", "qualification"]
+        rows, ["type", "related_substance", "qualification", "access"]
     )
 
 
@@ -211,10 +215,11 @@ def _format_properties(properties: list[Any]) -> list[str]:
                 "type": entry.get("propertyType"),
                 "value": amount,
                 "defining": entry.get("defining"),
+                "access": _format_access(entry.get("access")),
             }
         )
     return _section_header("Properties") + _format_table(
-        rows, ["name", "type", "value", "defining"]
+        rows, ["name", "type", "value", "defining", "access"]
     )
 
 
@@ -333,9 +338,10 @@ def _format_polymer(polymer: dict[str, Any]) -> list[str]:
                     "monomer": _resolve_substance_name(sub),
                     "type": entry.get("type"),
                     "defining": entry.get("defining"),
+                    "access": _format_access(entry.get("access")),
                 }
             )
-        md += _format_table(rows, ["monomer", "type", "defining"])
+        md += _format_table(rows, ["monomer", "type", "defining", "access"])
         md.append("")
     return md
 
@@ -355,9 +361,10 @@ def _format_mixture(mixture: dict[str, Any]) -> list[str]:
             {
                 "substance": _resolve_substance_name(sub),
                 "type": entry.get("type"),
+                "access": _format_access(entry.get("access")),
             }
         )
-    md += _format_table(rows, ["substance", "type"])
+    md += _format_table(rows, ["substance", "type", "access"])
     md.append("")
     return md
 
@@ -399,9 +406,10 @@ def _format_specified_substance(specified: dict[str, Any]) -> list[str]:
             {
                 "constituent": _resolve_substance_name(sub),
                 "role": entry.get("role"),
+                "access": _format_access(entry.get("access")),
             }
         )
-    md += _format_table(rows, ["constituent", "role"])
+    md += _format_table(rows, ["constituent", "role", "access"])
     md.append("")
     return md
 
@@ -432,11 +440,12 @@ def _format_moieties(moieties: list[Any]) -> list[str]:
                 "count": entry.get("count"),
                 "amount": amount,
                 "stereochemistry": entry.get("stereochemistry"),
+                "access": _format_access(entry.get("access")),
             }
         )
     return _section_header("Moieties", level=3) + _format_table(
         rows,
-        ["formula", "smiles", "molecular_weight", "count", "amount", "stereochemistry"],
+        ["formula", "smiles", "molecular_weight", "count", "amount", "stereochemistry", "access"],
     ) + [""]
 
 
@@ -494,4 +503,30 @@ def substance_to_markdown(data: dict[str, Any]) -> str:
         md += _format_properties(properties)
         md.append("")
 
+    references = data.get("references") or []
+    if isinstance(references, list) and references:
+        md += _format_references(references)
+        md.append("")
+
     return "\n".join(md).rstrip() + "\n"
+
+
+def _format_references(references: list[Any]) -> list[str]:
+    """Render a compact references table."""
+    rows: list[dict[str, Any]] = []
+    for entry in references[:50]:
+        if not isinstance(entry, dict):
+            continue
+        tags = entry.get("tags")
+        rows.append(
+            {
+                "citation": entry.get("citation"),
+                "doc_type": entry.get("docType"),
+                "public_domain": "yes" if entry.get("publicDomain") else "",
+                "tags": _join_values(tags) if isinstance(tags, list) else (tags or ""),
+                "access": _format_access(entry.get("access")),
+            }
+        )
+    return _section_header("References") + _format_table(
+        rows, ["citation", "doc_type", "public_domain", "tags", "access"]
+    )
