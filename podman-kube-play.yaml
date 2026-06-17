@@ -173,9 +173,9 @@ spec:
           mountPath: /data
         - name: caddy-config-cache
           mountPath: /config
-        - name: host-certs
-          mountPath: /etc/ssl/certs
-          readonly: true
+        - name: ca-bundle
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          subPath: ca-certificates.crt
   volumes:
     - name: postgres-data
       persistentVolumeClaim:
@@ -188,8 +188,8 @@ spec:
         claimName: gsrs-caddy-data
     - name: caddy-config-cache
       emptyDir: {}
-    - name: host-certs
-      hostPath:
-      path: /etc/ssl/certs
-      type: DirectoryOrCreate
+    - name: ca-bundle
+      configMap:
+        name: ca-bundle
+        defaultMode: 420
 

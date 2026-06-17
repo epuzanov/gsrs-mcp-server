@@ -22,8 +22,8 @@ class TestSubstanceSummary(unittest.TestCase):
             "names": [
                 {
                     "name": "Aspirin",
-                    "type": "cn",
-                    "domains": ["drug"],
+                    "type": "cn",                    "displayName": True,
+                    "preferred": True,                    "domains": ["drug"],
                     "languages": ["en"],
                 }
             ],
@@ -40,10 +40,12 @@ class TestSubstanceSummary(unittest.TestCase):
 
         self.assertTrue(markdown.startswith("# Substance: Aspirin"))
         self.assertIn("**Approval ID:** R16CO5Y76E", markdown)
+        self.assertIn("**Access:** Public", markdown)
         self.assertIn("## Structure", markdown)
-        self.assertIn("| Name | Type | Domains | Languages |", markdown)
-        self.assertIn("| Aspirin | cn | drug | en |", markdown)
-        self.assertIn("| CAS | 50-78-2 | primary |", markdown)
+        self.assertIn("| Name | Type | Display Name | Preferred | Name Orgs | Domains | Languages |", markdown)
+        self.assertIn("| Aspirin | cn | yes | yes |  | drug | en |", markdown)
+        self.assertIn("## Identifiers", markdown)
+        self.assertIn("| CAS | 50-78-2 |  | primary |", markdown)
 
     def _load_example(self, filename: str) -> dict:
         root = os.path.dirname(os.path.dirname(__file__))
@@ -56,9 +58,18 @@ class TestSubstanceSummary(unittest.TestCase):
         md = substance_to_markdown(data)
         self.assertIn("## Structure", md)
         self.assertIn("C13H18O2", md)
-        self.assertIn("## Codes", md)
-        self.assertIn("WK2XYI10QM", md)
+        self.assertIn("**Access:** Public", md)
+        self.assertIn("## Identifiers", md)
+        self.assertIn("## Classifications", md)
+        self.assertIn("FDA UNII", md)
+        self.assertIn("WHO-ATC", md)
+        self.assertIn("N02AJ19", md)
         self.assertIn("## Names", md)
+
+    def test_summary_shows_protected_when_access_present(self):
+        data = self._load_example("d4ee19a6-a33f-4d37-bf05-5feeaa938b83.json")
+        md = substance_to_markdown(data)
+        self.assertIn("**Access:** Protected", md)
 
     def test_mixture_summary_renders_components(self):
         data = self._load_example("34a6ff49-23f3-4079-8d1a-544146ac6d62.json")

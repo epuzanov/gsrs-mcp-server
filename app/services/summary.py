@@ -16,6 +16,13 @@ def _join_values(value: Any) -> str:
     return str(value)
 
 
+def _format_access(access: Any) -> str:
+    """Return 'Public' when access is empty, otherwise 'Protected'."""
+    if access and (not isinstance(access, list) or any(access)):
+        return "Protected"
+    return "Public"
+
+
 def _display_name(data: dict[str, Any]) -> str:
     """Extract the preferred GSRS display name."""
     if data.get("_name"):
@@ -82,33 +89,83 @@ def _format_names(names: list[Any]) -> list[str]:
     rows: list[dict[str, Any]] = []
     for entry in names:
         if isinstance(entry, dict):
+            name_orgs = entry.get("nameOrgs") or []
+            orgs = []
+            for org in name_orgs:
+                if isinstance(org, dict) and org.get("nameOrg"):
+                    orgs.append(str(org["nameOrg"]))
+            display = entry.get("displayName",  False)
+            if isinstance(display, str):
+                display = display.lower() == "true"
+            preferred = entry.get("preferred", False)
+            if isinstance(preferred, str):
+                preferred = preferred.lower() == "true"
             rows.append(
                 {
                     "name": entry.get("name"),
                     "type": entry.get("type"),
+                    "display_name": "yes" if display else "",
+                    "preferred": "yes" if preferred else "",
+                    "name_orgs": ", ".join(orgs),
                     "domains": _join_values(entry.get("domains")),
                     "languages": _join_values(entry.get("languages")),
                 }
             )
         else:
-            rows.append({"name": entry, "type": "", "domains": "", "languages": ""})
+            rows.append(
+                {
+                    "name": entry,
+                    "type": "",
+                    "display_name": "",
+                    "preferred": "",
+                    "name_orgs": "",
+                    "domains": "",
+                    "languages": "",
+                }
+            )
     return _section_header("Names") + _format_table(
-        rows, ["name", "type", "domains", "languages"]
+        rows, ["name", "type", "display_name", "preferred", "name_orgs", "domains", "languages"]
     )
 
 
 def _format_codes(codes: list[Any]) -> list[str]:
-    """Render the codes table."""
-    rows = [
-        {
+    """Render identifiers and classifications tables from GSRS codes.
+
+    Codes with a truthy `_isClassification` flag or a `comments` value that
+    looks like a classification path go into the Classifications table;
+    all other codes go into Identifiers.
+    """
+    identifiers: list[dict[str, Any]] = []
+    classifications: list[dict[str, Any]] = []
+    for entry in codes:
+        if not isinstance(entry, dict):
+            continue
+        is_classification = entry.get("_isClassification") or "|" in str(
+            entry.get("comments") or ""
+        )
+        row = {
             "code_system": entry.get("codeSystem"),
             "code": entry.get("code"),
+            "type": entry.get("type"),
             "comments": entry.get("comments"),
         }
-        for entry in codes
-        if isinstance(entry, dict)
-    ]
-    return _section_header("Codes") + _format_table(rows, ["code_system", "code", "comments"])
+        if is_classification:
+            classifications.append(row)
+        else:
+            identifiers.append(row)
+
+    md: list[str] = []
+    if identifiers:
+        md += _section_header("Identifiers")
+        md += _format_table(identifiers, ["code_system", "code", "type", "comments"])
+        md.append("")
+    if classifications:
+        md += _section_header("Classifications")
+        md += _format_table(
+            classifications, ["code_system", "code", "type", "comments"]
+        )
+        md.append("")
+    return md
 
 
 def _format_relationships(relationships: list[Any]) -> list[str]:
@@ -389,9 +446,9 @@ def substance_to_markdown(data: dict[str, Any]) -> str:
     md.append(
         f"**Approval ID:** {data.get('_approvalIDDisplay') or data.get('approvalID') or 'N/A'}"
     )
-    md.append(
-        f"**Class:** {data.get('substanceClass', 'N/A')} | **Status:** {data.get('status', 'N/A')}"
-    )
+    md.append(f"**Class:** {data.get('substanceClass', 'N/A')}")
+    md.append(f"**Status:** {data.get('status', 'N/A')}")
+    md.append(f"**Access:** {_format_access(data.get('access'))}")
     md.append("")
 
     substance_class = data.get("substanceClass", "")
