@@ -16,6 +16,7 @@ GSRS_SUBSTANCE_URL = f"{GSRS_BASE_URL}/substances"
 GSRS_SEARCH_URL = f"{GSRS_BASE_URL}/substances/search"
 GSRS_STRUCTURE_SEARCH_URL = f"{GSRS_BASE_URL}/substances/structureSearch"
 GSRS_SEQUENCE_SEARCH_URL = f"{GSRS_BASE_URL}/substances/sequenceSearch"
+GSRS_CV_URL = f"{GSRS_BASE_URL}/vocabularies"
 
 
 class GsrsApiService:
@@ -217,6 +218,67 @@ class GsrsApiService:
     def ping(self) -> None:
         """Lightweight upstream probe used by readiness checks."""
         self._request("GET", f"{self.base_url}/substances/search", params={"query": "aspirin", "size": 1})
+
+    # ------------------------------------------------------------------
+    # Controlled vocabulary endpoints
+    # ------------------------------------------------------------------
+
+    def get_cv_domains(self, size: int = 200) -> Dict[str, Any]:
+        """Return the list of available GSRS controlled vocabulary domains.
+
+        GSRS exposes each controlled vocabulary at the ``/vocabularies``
+        endpoint. Each entry contains a ``domain`` key identifying the
+        vocabulary (e.g. ``NAME_TYPE``) and a ``terms`` list.
+
+        Args:
+            size: Max number of vocabularies to return (default 200 covers
+                all current GSRS domains).
+
+        Returns:
+            A dict with ``content`` (list of vocabularies), ``total``, and
+            ``count``.
+        """
+        envelope = self._request_json(
+            "GET",
+            f"{self.base_url}/vocabularies",
+            params={"top": max(1, min(size, 500)), "skip": 0},
+        )
+        if isinstance(envelope, list):
+            return {
+                "content": envelope,
+                "total": len(envelope),
+                "count": len(envelope),
+            }
+
+        content = envelope.get("content") or envelope.get("results") or []
+        total = envelope.get("total", len(content))
+        return {
+            "content": content,
+            "total": total,
+            "count": len(content),
+        }
+
+    def get_cv_terms(self, domain: str) -> Dict[str, Any]:
+        """Return the terms for a single GSRS controlled vocabulary domain.
+
+        Each term contains at least ``value`` (the stored code) and
+        ``display`` (the human-readable label). This is useful for
+        resolving short codes such as ``of`` -> ``Official Name`` in
+        ``names.type`` or ``codes.type``.
+
+        Args:
+            domain: CV domain name, e.g. ``NAME_TYPE``, ``CODE_TYPE``,
+                ``SUBSTANCE_CLASS``.
+
+        Returns:
+            Vocabulary dict with ``domain`` and ``terms`` list.
+        """
+        if not domain or not str(domain).strip():
+            raise ValueError("domain is required")
+        return self._request_json(
+            "GET",
+            f"{self.base_url}/vocabularies/{domain.strip()}",
+        )
 
     # ------------------------------------------------------------------
     # Core substance endpoints

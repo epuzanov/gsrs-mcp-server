@@ -110,7 +110,8 @@ mcp = FastMCP(
         "Compact GSRS MCP server. Use rag_query for local retrieval evidence with parent context, "
         "rag_query_chunks for raw chunk retrieval, rag_ingest to load GSRS substance JSON, "
         "gsrs_get_substance/summary for upstream records, and the GSRS API search tools for live API lookup. "
-        "Use get_parent_context to explore parent context for specific chunks."
+        "Use gsrs_get_cv_domains and gsrs_get_cv_terms to resolve controlled vocabulary codes "
+        "(e.g. name types of -> Official Name). Use get_parent_context to explore parent context for specific chunks."
     ),
     token_verifier=token_verifier,
     auth=auth,
@@ -623,6 +624,93 @@ async def gsrs_get_facets(
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
         return f"GSRS get facets error: {exc}"
+
+
+@mcp.tool()
+async def gsrs_get_cv_domains(size: int = 200) -> str:
+    """List available GSRS controlled vocabulary (CV) domains.
+
+    Each domain represents a controlled vocabulary that can be queried
+    with `gsrs_get_cv_terms`. Common domains include NAME_TYPE (for
+    `names.type`), CODE_TYPE (for `codes.type`), and SUBSTANCE_CLASS.
+
+    Args:
+        size: Maximum number of domains to return (default 200).
+
+    Returns:
+        Markdown list of CV domain names. Use a domain name as the
+        `domain` argument to `gsrs_get_cv_terms`.
+    """
+    _ensure_runtime_initialized()
+    tool = _tool_call("gsrs_get_cv_domains", query_type="cv")
+    try:
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
+            return f"GSRS API is currently unavailable: {reason}"
+
+        payload = runtime.gsrs_api.get_cv_domains(size=max(1, min(size, 500)))
+        domains = payload.get("content") or payload.get("results") or []
+        tool.finish("success", result_count=len(domains), citation_count=0)
+
+        if not domains:
+            return "No controlled vocabulary domains available from GSRS API."
+
+        lines = [f"Found **{len(domains)}** controlled vocabulary domain(s):\n"]
+        for entry in domains:
+            domain = entry.get("domain") or entry.get("value") or "?"
+            display = entry.get("display") or domain
+            lines.append(f"- `{domain}` — {display}")
+        return "\n".join(lines)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"GSRS get CV domains error: {exc}"
+
+
+@mcp.tool()
+async def gsrs_get_cv_terms(domain: str) -> str:
+    """Return the terms for a single GSRS controlled vocabulary domain.
+
+    Use this to resolve short codes such as `of` (Official Name), `sys`
+    (Systematic Name), `cn` (Common Name), or `cd` (Code) from the
+    `NAME_TYPE` domain, and analogous codes from other domains.
+
+    Args:
+        domain: CV domain name, e.g. `NAME_TYPE`, `CODE_TYPE`,
+            `SUBSTANCE_CLASS`, `POLYMER_CLASS`.
+
+    Example:
+        domain="NAME_TYPE"
+
+    Returns:
+        Markdown table mapping each term `value` to its display label.
+    """
+    _ensure_runtime_initialized()
+    tool = _tool_call("gsrs_get_cv_terms", query_type="cv")
+    try:
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
+            return f"GSRS API is currently unavailable: {reason}"
+
+        payload = runtime.gsrs_api.get_cv_terms(domain)
+        terms = payload.get("terms") or []
+        tool.finish("success", result_count=len(terms), citation_count=0)
+
+        if not terms:
+            return f"No terms found for CV domain **{domain}**."
+
+        lines = [f"Terms for CV domain **{domain}** (`{payload.get('domain', domain)}`):\n"]
+        lines.append("| Value | Display |")
+        lines.append("|---|---|")
+        for term in terms:
+            value = term.get("value") or ""
+            display = term.get("display") or value
+            lines.append(f"| `{value}` | {display} |")
+        return "\n".join(lines)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"GSRS get CV terms error: {exc}"
 
 
 @mcp.tool()

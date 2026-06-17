@@ -36,6 +36,8 @@ class TestCompactToolContract(unittest.TestCase):
                 "gsrs_get_summary",
                 "gsrs_parametric_search",
                 "gsrs_get_facets",
+                "gsrs_get_cv_domains",
+                "gsrs_get_cv_terms",
                 "gsrs_structure_search",
                 "gsrs_sequence_search",
                 "health",

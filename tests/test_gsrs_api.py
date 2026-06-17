@@ -208,6 +208,57 @@ class TestGsrsApiService(unittest.TestCase):
         self.assertEqual(payload["results"], expected)
         self.assertEqual(payload["count"], 2)
 
+    def test_get_cv_domains_lists_domains(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+
+        def fake_request_json(method, url, **kwargs):
+            self.assertEqual(method, "GET")
+            self.assertTrue(url.endswith("/vocabularies"))
+            self.assertEqual(kwargs.get("params"), {"top": 200, "skip": 0})
+            return {
+                "total": 3,
+                "count": 3,
+                "content": [
+                    {"domain": "NAME_TYPE"},
+                    {"domain": "CODE_TYPE"},
+                    {"domain": "SUBSTANCE_CLASS"},
+                ],
+            }
+
+        with patch.object(service, "_request_json", side_effect=fake_request_json):
+            payload = service.get_cv_domains()
+
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual([d["domain"] for d in payload["content"]], ["NAME_TYPE", "CODE_TYPE", "SUBSTANCE_CLASS"])
+
+    def test_get_cv_terms_returns_terms_for_domain(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+
+        def fake_request_json(method, url, **kwargs):
+            self.assertEqual(method, "GET")
+            self.assertTrue(url.endswith("/vocabularies/NAME_TYPE"))
+            return {
+                "domain": "NAME_TYPE",
+                "terms": [
+                    {"value": "of", "display": "Official Name"},
+                    {"value": "sys", "display": "Systematic Name"},
+                    {"value": "cn", "display": "Common Name"},
+                ],
+            }
+
+        with patch.object(service, "_request_json", side_effect=fake_request_json):
+            payload = service.get_cv_terms("NAME_TYPE")
+
+        self.assertEqual(payload["domain"], "NAME_TYPE")
+        self.assertEqual(len(payload["terms"]), 3)
+        self.assertEqual(payload["terms"][0]["display"], "Official Name")
+
+    def test_get_cv_terms_rejects_empty_domain(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with self.assertRaises(ValueError):
+            service.get_cv_terms("")
+
 
 if __name__ == "__main__":
     unittest.main()
