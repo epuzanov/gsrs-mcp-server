@@ -1,4 +1,4 @@
-"""Contract tests for the compact MCP tool surface."""
+"""Contract tests for the compact MCP tool surface and resources."""
 import ast
 import unittest
 from pathlib import Path
@@ -25,8 +25,17 @@ class TestCompactToolContract(unittest.TestCase):
         "statistics",
     ]
 
-    def _tool_decorators(self):
-        """Yield every function decorated with @mcp.tool() in app/main.py."""
+    EXPECTED_RESOURCE_URIS = [
+        "gsrs://substances/{identifier}",
+        "gsrs://substances/{identifier}/summary",
+        "gsrs://cv/domains",
+        "gsrs://cv/{domain}/terms",
+        "server://health",
+        "server://statistics",
+    ]
+
+    def _decorated_functions(self, decorator_attr: str):
+        """Yield every function decorated with a given mcp attribute."""
         source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
         module = ast.parse(source)
         for node in module.body:
@@ -36,9 +45,17 @@ class TestCompactToolContract(unittest.TestCase):
                 if (
                     isinstance(decorator, ast.Call)
                     and isinstance(decorator.func, ast.Attribute)
-                    and decorator.func.attr == "tool"
+                    and decorator.func.attr == decorator_attr
                 ):
                     yield node.name, decorator
+
+    def _tool_decorators(self):
+        """Yield every function decorated with @mcp.tool() in app/main.py."""
+        yield from self._decorated_functions("tool")
+
+    def _resource_decorators(self):
+        """Yield every function decorated with @mcp.resource(...) in app/main.py."""
+        yield from self._decorated_functions("resource")
 
     def test_main_exposes_only_compact_tool_surface(self):
         """The server should not drift back toward the old broad tool set."""
@@ -107,3 +124,14 @@ class TestCompactToolContract(unittest.TestCase):
                 break
         else:
             self.fail("rag_ingest tool not found")
+
+    def test_main_exposes_expected_resources(self):
+        """Resources should expose stable identifier-based lookups."""
+        uris = []
+        for _, decorator in self._resource_decorators():
+            positional = decorator.args
+            if positional:
+                uri = positional[0]
+                if isinstance(uri, ast.Constant):
+                    uris.append(uri.value)
+        self.assertEqual(sorted(uris), sorted(self.EXPECTED_RESOURCE_URIS))

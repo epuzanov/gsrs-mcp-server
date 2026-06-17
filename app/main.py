@@ -110,9 +110,11 @@ mcp = FastMCP(
     instructions=(
         "Compact GSRS MCP server. Use rag_query for local retrieval evidence with parent context, "
         "rag_query_chunks for raw chunk retrieval, rag_ingest to load GSRS substance JSON, "
-        "gsrs_get_substance/summary for upstream records, and the GSRS API search tools for live API lookup. "
-        "Use gsrs_get_cv_domains and gsrs_get_cv_terms to resolve controlled vocabulary codes "
-        "(e.g. name types of -> Official Name). Use get_parent_context to explore parent context for specific chunks."
+        "and the GSRS API search tools for live API lookup. "
+        "Resources: gsrs://substances/{identifier} for raw JSON, gsrs://substances/{identifier}/summary for markdown summary, "
+        "gsrs://cv/domains for controlled vocabulary domain list, gsrs://cv/{domain}/terms for controlled vocabulary lookup, "
+        "and server://health / server://statistics for runtime state. "
+        "Use get_parent_context to explore parent context for specific chunks."
     ),
     token_verifier=token_verifier,
     auth=auth,
@@ -948,6 +950,114 @@ async def statistics() -> str:
 def main() -> None:
     """Run the MCP server."""
     mcp.run(transport=settings.mcp_transport, mount_path="/")
+
+
+# ------------------------------------------------------------------
+# MCP Resources: stable, idempotent, identifier-based lookups
+# ------------------------------------------------------------------
+
+@mcp.resource("gsrs://substances/{identifier}", mime_type="application/json")
+async def gsrs_substance_resource(identifier: str) -> str:
+    """Return a complete GSRS substance JSON document by UUID or approval identifier."""
+    _ensure_runtime_initialized()
+    if not runtime.gsrs_api_available():
+        return json.dumps({"error": runtime.gsrs_api_unavailable_reason()})
+    try:
+        substance = runtime.gsrs_api.get_substance(identifier)
+        if substance is None:
+            return json.dumps({"error": f"Substance {identifier} not found."})
+        return json.dumps(substance, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@mcp.resource("gsrs://substances/{identifier}/summary", mime_type="text/markdown")
+async def gsrs_substance_summary_resource(identifier: str) -> str:
+    """Return a markdown summary for a GSRS substance by UUID or approval identifier."""
+    _ensure_runtime_initialized()
+    if not runtime.gsrs_api_available():
+        return f"GSRS API is currently unavailable: {runtime.gsrs_api_unavailable_reason()}"
+    try:
+        substance = runtime.gsrs_api.get_substance(identifier)
+        if substance is None:
+            return f"Substance **{identifier}** not found in GSRS API."
+        return substance_to_markdown(substance)
+    except Exception as exc:
+        return f"GSRS summary error: {exc}"
+
+
+@mcp.resource("gsrs://cv/domains", mime_type="application/json")
+async def gsrs_cv_domains_resource() -> str:
+    """List available GSRS controlled vocabulary (CV) domains as JSON."""
+    _ensure_runtime_initialized()
+    if not runtime.gsrs_api_available():
+        return json.dumps({"error": runtime.gsrs_api_unavailable_reason()})
+    try:
+        payload = runtime.gsrs_api.get_cv_domains(size=200)
+        domains = payload.get("content") or payload.get("results") or []
+        return json.dumps({
+            "total": payload.get("total", len(domains)),
+            "count": len(domains),
+            "domains": [
+                {
+                    "domain": entry.get("domain") or entry.get("value"),
+                    "display": entry.get("display") or entry.get("domain") or entry.get("value"),
+                }
+                for entry in domains
+                if isinstance(entry, dict)
+            ],
+        }, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@mcp.resource("gsrs://cv/{domain}/terms", mime_type="application/json")
+async def gsrs_cv_domain_terms_resource(domain: str) -> str:
+    """Return the terms for a GSRS controlled vocabulary domain as JSON."""
+    _ensure_runtime_initialized()
+    if not runtime.gsrs_api_available():
+        return json.dumps({"error": runtime.gsrs_api_unavailable_reason()})
+    try:
+        payload = runtime.gsrs_api.get_cv_terms(domain)
+        terms = payload.get("terms") or []
+        return json.dumps({
+            "domain": payload.get("domain", domain),
+            "count": len(terms),
+            "terms": [
+                {
+                    "value": term.get("value"),
+                    "display": term.get("display") or term.get("value"),
+                    "deprecated": term.get("deprecated", False),
+                    "selected": term.get("selected", False),
+                }
+                for term in terms
+                if isinstance(term, dict)
+            ],
+        }, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@mcp.resource("server://health", mime_type="application/json")
+async def server_health_resource() -> str:
+    """Return structured runtime health and readiness information."""
+    _ensure_runtime_initialized()
+    payload = runtime.get_status_payload()
+    payload["live"] = True
+    return json.dumps(payload, indent=2, default=str)
+
+
+@mcp.resource("server://statistics", mime_type="application/json")
+async def server_statistics_resource() -> str:
+    """Return local vector store statistics."""
+    _ensure_runtime_initialized()
+    try:
+        if not runtime.vector_backend_available():
+            return json.dumps({"error": runtime.vector_backend_unavailable_reason()})
+        payload = runtime.vector_db.get_statistics()
+        return json.dumps(payload, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
 
 
 if __name__ == "__main__":
