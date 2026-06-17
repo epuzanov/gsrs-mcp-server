@@ -105,7 +105,7 @@ latency, cache hit/miss, and truncation counters are visible in the same
 
 ## MCP Tools
 
-### 1. `rag_query_with_parent_context`
+### 1. `rag_query`
 Enhanced RAG query that automatically enriches results with parent context.
 
 **Parameters:**
@@ -281,7 +281,7 @@ Format and Return to User
 ### Example 1: RAG Query with Parent Context
 ```python
 # Client code
-results = await rag_query_with_parent_context(
+results = await rag_query(
     query="What is the mechanism of action?",
     top_k=5,
     include_parent_text=True
@@ -401,7 +401,7 @@ The implementation gracefully handles:
 
 1. **ServerRuntime**: `runtime.parent_enricher` property (lazily created
    on first access; shares the runtime's `InMemoryMetrics`).
-2. **MCP Tools**: `rag_query_with_parent_context`, `get_parent_context`.
+2. **MCP Tools**: `rag_query`, `rag_query_chunks`, `get_parent_context`.
 3. **Backend Queries**: Optimized queries for filtered retrieval
    (`vector_db.get_documents(substance_uuid=..., sections=[...], limit=...)`).
 4. **Existing RAG Flow**: Non-breaking additions to existing tools.
@@ -430,7 +430,7 @@ The procedure is:
    curl -s http://localhost:8000/readyz | jq .metrics.counters
    ```
    You should see `parent_rebuild.count` increase on subsequent
-   `rag_query_with_parent_context` calls.
+   `rag_query` calls.
 
 ## Migration Path
 

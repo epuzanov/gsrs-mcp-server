@@ -28,9 +28,9 @@ class TestCompactToolContract(unittest.TestCase):
         self.assertEqual(
             tool_names,
             [
-                "rag_query",
+                "rag_query_chunks",
                 "rag_ingest",
-                "rag_query_with_parent_context",
+                "rag_query",
                 "get_parent_context",
                 "gsrs_get_substance",
                 "gsrs_get_summary",

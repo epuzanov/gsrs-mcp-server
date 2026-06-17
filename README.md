@@ -11,7 +11,8 @@ Compact MCP server for GSRS substance retrieval and live GSRS API lookup.
 
 ## Tools
 
-- `rag_query`: search locally ingested GSRS chunks and return evidence only
+- `rag_query`: search locally ingested GSRS chunks and return evidence with parent context
+- `rag_query_chunks`: search local chunks and return raw chunk evidence (no parent context)
 - `rag_ingest`: ingest one GSRS substance JSON document into the local vector store
 - `gsrs_get_substance`: fetch a full substance JSON document from the GSRS API
 - `gsrs_get_summary`: fetch a substance and return a markdown summary

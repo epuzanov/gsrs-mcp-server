@@ -56,7 +56,7 @@ Return enriched results
 
 ## New MCP Tools
 
-### 1. `rag_query_with_parent_context`
+### 1. `rag_query`
 Performs RAG query with automatic parent context enrichment.
 
 **Parameters:**
@@ -202,7 +202,7 @@ class ParentContextEnricher:
 ### Example 1: Search with Parent Context
 ```python
 # Use the MCP tool
-results = await rag_query_with_parent_context(
+results = await rag_query(
     query="What is the chemical structure?",
     top_k=5,
     include_parent_text=True,
@@ -331,4 +331,4 @@ parent = redis.get(cache_key) or reconstruct()
 - Implementation: `app/services/parent_child_retrieval.py`
 - Tests: `tests/test_parent_child_retrieval.py`
 - Documentation: `docs/PARENT_CHILD_RETRIEVAL.md`
-- MCP Tools: `app/main.py` (search for `rag_query_with_parent_context`)
+- MCP Tools: `app/main.py` (search for `rag_query` and `rag_query_chunks`)

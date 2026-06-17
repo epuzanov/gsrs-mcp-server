@@ -14,10 +14,10 @@ The parent-child retrieval system automatically enriches retrieval results with 
 
 ### Option 1: Query with Parent Context Enrichment
 
-Use `rag_query_with_parent_context` to automatically enrich search results:
+Use `rag_query` to automatically enrich search results:
 
 ```
-Tool: rag_query_with_parent_context
+Tool: rag_query
 
 Parameters:
 - query (required): "What is the mechanism of action for aspirin?"
@@ -168,7 +168,7 @@ When using parent context results in a multi-turn conversation:
 ```
 User: "What are the side effects of aspirin?"
 
-Assistant uses rag_query_with_parent_context:
+Assistant uses rag_query:
 1. Searches for "side effects aspirin"
 2. Gets child chunks about side effects with parent context
 3. Parent context automatically includes:
@@ -206,7 +206,7 @@ Format and return to LLM
 
 **For quick, focused answers:**
 ```
-rag_query_with_parent_context(
+rag_query(
   query="aspirin dosage",
   top_k=3,
   parent_text_limit=500
@@ -215,7 +215,7 @@ rag_query_with_parent_context(
 
 **For comprehensive understanding:**
 ```
-rag_query_with_parent_context(
+rag_query(
   query="mechanism of action",
   top_k=8,
   parent_text_limit=1000,
@@ -225,7 +225,7 @@ rag_query_with_parent_context(
 
 **For specific document:**
 ```
-rag_query_with_parent_context(
+rag_query(
   query="side effects",
   filters='{"document_id": "550e8400-e29b-41d4-a716-446655440000"}',
   top_k=5
@@ -261,7 +261,7 @@ rag_query_with_parent_context(
 - Verify root_section detection with diagnostic queries
 
 ### Slow parent context enrichment
-**Symptom**: `rag_query_with_parent_context` returns slowly
+**Symptom**: `rag_query` returns slowly
 
 **Causes**:
 1. Very large documents (100s of chunks)
@@ -276,8 +276,8 @@ rag_query_with_parent_context(
 
 ## Next Steps
 
-1. **Try it out**: Use `rag_query_with_parent_context` in your queries
-2. **Compare results**: Check improvement vs standard `rag_query`
+1. **Try it out**: Use `rag_query` in your queries
+2. **Compare results**: Check improvement vs `rag_query_chunks`
 3. **Measure impact**: Track LLM answer quality improvements
 4. **Provide feedback**: Report performance metrics and use cases
 5. **Optimize**: Based on metrics, consider dedicated parent storage
@@ -291,10 +291,10 @@ rag_query_with_parent_context(
 
 ## API Reference
 
-### rag_query_with_parent_context
+### rag_query
 
 ```
-POST /mcp/tools/rag_query_with_parent_context
+POST /mcp/tools/rag_query
 
 Parameters:
 - query (str, required): Search query text
@@ -306,6 +306,20 @@ Parameters:
 Returns:
 - Formatted string with enriched results
 - Each result includes: score, section, chunk info, parent context
+```
+
+### rag_query_chunks
+
+```
+POST /mcp/tools/rag_query_chunks
+
+Parameters:
+- query (str, required): Search query text
+- top_k (int, default=8): Number of raw chunk results
+- filters (str, default=""): JSON filter object
+
+Returns:
+- Formatted string with raw chunk results (no parent context)
 ```
 
 ### get_parent_context

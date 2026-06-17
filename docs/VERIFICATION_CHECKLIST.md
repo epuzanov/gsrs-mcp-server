@@ -43,7 +43,9 @@
   - [x] Import of `ParentContextEnricher`
 
 #### MCP Tools
-- [x] `rag_query_with_parent_context` tool
+- [x] `rag_query` tool (with parent context)
+- [x] `rag_query_chunks` tool (raw chunk retrieval)
+- [x] `rag_query` tool (formerly `rag_query_with_parent_context`)
   - [x] Performs RAG query
   - [x] Automatically enriches with parent context
   - [x] Parameters: query, top_k, include_parent_text, parent_text_limit, filters

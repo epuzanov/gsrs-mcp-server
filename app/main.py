@@ -107,9 +107,9 @@ auth, token_verifier = _build_auth_settings(settings)
 mcp = FastMCP(
     "GSRS MCP Server",
     instructions=(
-        "Compact GSRS MCP server. Use rag_query or rag_query_with_parent_context for local retrieval evidence, "
-        "rag_ingest to load GSRS substance JSON, gsrs_get_substance/summary for "
-        "upstream records, and the GSRS API search tools for live API lookup. "
+        "Compact GSRS MCP server. Use rag_query for local retrieval evidence with parent context, "
+        "rag_query_chunks for raw chunk retrieval, rag_ingest to load GSRS substance JSON, "
+        "gsrs_get_substance/summary for upstream records, and the GSRS API search tools for live API lookup. "
         "Use get_parent_context to explore parent context for specific chunks."
     ),
     token_verifier=token_verifier,
@@ -253,14 +253,14 @@ def _ingest_substance_payload(substance: dict[str, Any]) -> tuple[str, int]:
 
 
 @mcp.tool()
-async def rag_query(
+async def rag_query_chunks(
     query: str,
     top_k: int = 8,
     filters: str = "",
 ) -> str:
     """Search local ingested GSRS chunks and return retrieval evidence only."""
     _ensure_runtime_initialized()
-    tool = _tool_call("rag_query", query_type="rag")
+    tool = _tool_call("rag_query_chunks", query_type="rag")
     try:
         if not runtime.retrieval_available():
             reason = runtime.retrieval_unavailable_reason()
@@ -318,7 +318,7 @@ async def rag_ingest(substance_json: str) -> str:
 
 
 @mcp.tool()
-async def rag_query_with_parent_context(
+async def rag_query(
     query: str,
     top_k: int = 8,
     include_parent_text: bool = True,
@@ -326,14 +326,13 @@ async def rag_query_with_parent_context(
     filters: str = "",
 ) -> str:
     """Search local ingested GSRS chunks with parent context reconstruction.
-    
+
     Performs RAG query and enriches results with parent context reconstructed
     from chunks sharing the same (document_id, root_section). This provides
     broader document context without requiring dedicated parent storage.
     """
     _ensure_runtime_initialized()
-    tool = _tool_call("rag_query_with_parent_context", query_type="rag_with_parent")
-    try:
+    tool = _tool_call("rag_query", query_type="rag_with_parent")
         if not runtime.retrieval_available():
             reason = runtime.retrieval_unavailable_reason()
             tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)

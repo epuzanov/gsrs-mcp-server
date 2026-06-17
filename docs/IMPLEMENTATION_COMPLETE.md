@@ -114,19 +114,23 @@ def get_documents_by_section_and_substance(
 
 **New Tools**:
 
-1. **`rag_query_with_parent_context`**
+1. **`rag_query`**
    - Enhanced RAG query with automatic parent context enrichment
    - Parameters: `query`, `top_k`, `include_parent_text`, `parent_text_limit`, `filters`
    - Returns: Formatted results with parent context
 
-2. **`get_parent_context`**
+2. **`rag_query_chunks`**
+   - Raw chunk retrieval without parent context enrichment
+   - Parameters: `query`, `top_k`, `filters`
+   - Returns: Formatted chunk results
+
+3. **`get_parent_context`**
    - Retrieve parent context for specific chunk
    - Parameters: `chunk_id`
    - Returns: Parent identity, sections, aggregated text, metadata
 
 **Updated**:
 - MCP server instructions to mention new tools
-- Standard `rag_query` remains unchanged
 
 **Lines Added**: ~110 lines
 
@@ -173,7 +177,8 @@ def get_documents_by_section_and_substance(
 ┌─────────────────────────────────────────────────────────────┐
 │  MCP Tools (app/main.py)                                    │
 │  ┌─────────────────────────────────────────────────────────┐│
-│  │ rag_query_with_parent_context      get_parent_context  ││
+│  │ rag_query              get_parent_context  ││
+│  │ rag_query_chunks                                  ││
 │  └─────────────────────────────────────────────────────────┘│
 └──────────────────┬──────────────────────────────────────────┘
                    │
