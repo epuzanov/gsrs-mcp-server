@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from app.config import settings
 from app.observability import ToolTelemetry, configure_logging
@@ -253,7 +254,14 @@ def _ingest_substance_payload(substance: dict[str, Any]) -> tuple[str, int]:
     return str(substance.get("uuid", "unknown")), count
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 async def rag_query_chunks(
     query: str,
     top_k: int = 8,
@@ -296,7 +304,14 @@ async def rag_query_chunks(
         return f"RAG query error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 async def rag_ingest(substance_json: str) -> str:
     """Ingest one GSRS substance JSON document into the local RAG store."""
     _ensure_runtime_initialized()
@@ -318,7 +333,14 @@ async def rag_ingest(substance_json: str) -> str:
         return f"RAG ingest error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 async def rag_query(
     query: str,
     top_k: int = 8,
@@ -391,7 +413,14 @@ async def rag_query(
         return f"RAG query with parent context error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 async def get_parent_context(chunk_id: str) -> str:
     """Retrieve parent context for a specific chunk by chunk_id.
     
@@ -450,7 +479,14 @@ async def get_parent_context(chunk_id: str) -> str:
         return f"Get parent context error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 async def gsrs_get_substance(identifier: str) -> str:
     """Fetch a complete GSRS substance JSON document by UUID or approval identifier."""
     _ensure_runtime_initialized()
@@ -471,7 +507,14 @@ async def gsrs_get_substance(identifier: str) -> str:
         return f"GSRS get_substance error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 async def gsrs_get_summary(identifier: str) -> str:
     """Fetch a GSRS substance and return a markdown summary."""
     _ensure_runtime_initialized()
@@ -492,7 +535,14 @@ async def gsrs_get_summary(identifier: str) -> str:
         return f"GSRS summary error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 async def gsrs_parametric_search(
     query: str = "",
     filters: str = "",
@@ -557,7 +607,14 @@ async def gsrs_parametric_search(
         return f"GSRS parametric search error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 async def gsrs_get_facets(
     query: str = "*",
     filters: str = "",
@@ -626,7 +683,14 @@ async def gsrs_get_facets(
         return f"GSRS get facets error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 async def gsrs_get_cv_domains(size: int = 200) -> str:
     """List available GSRS controlled vocabulary (CV) domains.
 
@@ -667,7 +731,14 @@ async def gsrs_get_cv_domains(size: int = 200) -> str:
         return f"GSRS get CV domains error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 async def gsrs_get_cv_terms(domain: str) -> str:
     """Return the terms for a single GSRS controlled vocabulary domain.
 
@@ -713,7 +784,14 @@ async def gsrs_get_cv_terms(domain: str) -> str:
         return f"GSRS get CV terms error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 async def gsrs_structure_search(
     structure: str,
     search_type: Literal["exact", "exactplus", "sim", "substructure", "flex", "flexplus"] = "exact",
@@ -764,7 +842,14 @@ async def gsrs_structure_search(
         return f"GSRS structure search error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 async def gsrs_sequence_search(
     sequence: str,
     search_type: Literal["GLOBAL", "SUB"] = "GLOBAL",
@@ -817,7 +902,14 @@ async def gsrs_sequence_search(
         return f"GSRS sequence search error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 async def health() -> str:
     """Return structured runtime health and readiness information."""
     _ensure_runtime_initialized()
@@ -828,7 +920,14 @@ async def health() -> str:
     return json.dumps(payload, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 async def statistics() -> str:
     """Return local vector store statistics."""
     _ensure_runtime_initialized()
