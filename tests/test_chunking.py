@@ -604,9 +604,14 @@ class TestRootSectionAndHierarchy(unittest.TestCase):
                 continue
             for c in section_chunks:
                 self.assertEqual(
+                    c.root_section,
+                    section,
+                    f"{section} chunk should have root_section={section}, got {c.root_section}",
+                )
+                self.assertEqual(
                     c.metadata_json.get("root_section"),
                     section,
-                    f"{section} chunk should have root_section={section}, got {c.metadata_json.get('root_section')}",
+                    f"{section} chunk should mirror root_section in metadata",
                 )
                 self.assertNotIn("hierarchy", c.metadata_json)
 
@@ -650,9 +655,14 @@ class TestRootSectionAndHierarchy(unittest.TestCase):
 
         for c in component_chunks:
             self.assertEqual(
+                c.root_section,
+                "definitions",
+                "mixture component chunks should map root_section column to definitions",
+            )
+            self.assertEqual(
                 c.metadata_json.get("root_section"),
                 "definitions",
-                "mixture component chunks should map root_section to definitions",
+                "mixture component chunks should mirror root_section in metadata",
             )
             hierarchy = c.metadata_json.get("hierarchy")
             self.assertIsInstance(hierarchy, dict)
@@ -675,6 +685,7 @@ class TestRootSectionAndHierarchy(unittest.TestCase):
         self.assertEqual(len(tag_chunks), 2)
         # Top-level section: root_section == section, no hierarchy key.
         for c in tag_chunks:
+            self.assertEqual(c.root_section, "tags")
             self.assertEqual(c.metadata_json.get("root_section"), "tags")
             self.assertNotIn("hierarchy", c.metadata_json)
 

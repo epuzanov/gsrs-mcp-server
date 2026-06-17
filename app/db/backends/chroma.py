@@ -132,6 +132,7 @@ class ChromaDatabase(VectorDatabase):
                 "document_id": str(doc.document_id),
                 "chunk_id": doc.chunk_id,
                 "section": doc.section,
+                "root_section": doc.root_section,
                 "source_url": doc.source_url or "",
                 "metadata_json": json.dumps(doc.metadata_json)
             })
@@ -202,6 +203,7 @@ class ChromaDatabase(VectorDatabase):
                     chunk_id=str(metadata.get('chunk_id', doc_id)),
                     document_id=UUID(str(metadata.get('document_id', '00000000-0000-0000-0000-000000000000'))),
                     section=metadata.get('section', ''),
+                    root_section=metadata.get('root_section', ''),
                     source_url=metadata.get('source_url', ''),
                     text=results['documents'][0][i] if results['documents'] else '',
                     embedding=embedding,
@@ -221,9 +223,10 @@ class ChromaDatabase(VectorDatabase):
         doc_id: Optional[str] = None,
         substance_uuid: Optional[UUID] = None,
         sections: Optional[List[str]] = None,
+        root_sections: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> List[VectorDocument]:
-        """Get documents with flexible filtering and section sorting."""
+        """Get documents with flexible filtering and section/root_section sorting."""
         if self.collection is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
@@ -246,11 +249,32 @@ class ChromaDatabase(VectorDatabase):
                 chunk_id=metadata.get('chunk_id', doc_id),
                 document_id=UUID(str(metadata.get('document_id', '00000000-0000-0000-0000-000000000000'))),
                 section=metadata.get('section', ''),
+                root_section=metadata.get('root_section', ''),
                 source_url=metadata.get('source_url', ''),
                 text=text,
                 embedding=embedding_list,
                 metadata_json=metadata_json
             )
+
+        def build_and_clause(substance_uuid, sections, root_sections):
+            conditions: List[Dict[str, Any]] = []
+            if substance_uuid is not None:
+                conditions.append({"document_id": str(substance_uuid)})
+            if sections is not None and len(sections) > 0:
+                if len(sections) == 1:
+                    conditions.append({"section": sections[0]})
+                else:
+                    conditions.append({"$or": [{"section": s} for s in sections]})
+            if root_sections is not None and len(root_sections) > 0:
+                if len(root_sections) == 1:
+                    conditions.append({"root_section": root_sections[0]})
+                else:
+                    conditions.append({"$or": [{"root_section": r} for r in root_sections]})
+            if len(conditions) == 1:
+                return conditions[0]
+            if len(conditions) > 1:
+                return {"$and": conditions}
+            return None
 
         # Query by doc_id
         if doc_id is not None:
@@ -268,20 +292,9 @@ class ChromaDatabase(VectorDatabase):
             
             return [build_document(metadata, results['ids'][0], embedding, text)]
 
-        # Query by substance (with optional sections filter)
-        if substance_uuid is not None:
-            # Build where clause for sections
-            if sections is not None and len(sections) > 0:
-                if len(sections) == 1:
-                    where = {"$and": [{"document_id": str(substance_uuid)}, {"section": sections[0]}]}
-                else:
-                    # Create OR condition for multiple sections
-                    where = {"$and": [
-                        {"document_id": str(substance_uuid)},
-                        {"$or": [{"section": s} for s in sections]}
-                    ]}
-            else:
-                where = {"document_id": str(substance_uuid)}
+        # Query by substance (with optional sections/root_sections filter)
+        if substance_uuid is not None or sections is not None or root_sections is not None:
+            where = build_and_clause(substance_uuid, sections, root_sections)
             
             results = self.collection.get(
                 where=where,
@@ -303,10 +316,13 @@ class ChromaDatabase(VectorDatabase):
                     documents.append(build_document(metadata, doc_id_val, embedding, text))
                     count += 1
             
-            # Sort by sections order if provided
+            # Sort by sections order if provided, otherwise by root_sections order
             if sections is not None and len(sections) > 0 and documents:
                 section_order = {section: i for i, section in enumerate(sections)}
                 documents.sort(key=lambda doc: section_order.get(doc.section, len(sections)))
+            elif root_sections is not None and len(root_sections) > 0 and documents:
+                root_section_order = {root_section: i for i, root_section in enumerate(root_sections)}
+                documents.sort(key=lambda doc: root_section_order.get(doc.root_section, len(root_sections)))
             
             return documents
 
@@ -388,9 +404,47 @@ class ChromaDatabase(VectorDatabase):
                             metadata_json = {}
                     elif isinstance(metadata_value, dict):
                         metadata_json = metadata_value
-                    value =  metadata_json.get(field)
+                    value = metadata_json.get(field)
                     if value:
                         values.add(value)
+        return sorted(list(values))
+
+    def get_root_sections(
+        self,
+        substance_uuid: Optional[UUID] = None,
+    ) -> List[str]:
+        """Get distinct root_sections, optionally scoped to a substance."""
+        if self.collection is None:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        where = None
+        if substance_uuid is not None:
+            where = {"document_id": str(substance_uuid)}
+
+        results = self.collection.get(
+            where=where,
+            include=["metadatas"],
+        )
+
+        values: set[str] = set()
+        if results and results['metadatas']:
+            for metadata in results['metadatas']:
+                root_section = metadata.get('root_section')
+                if root_section:
+                    values.add(root_section)
+                elif 'metadata_json' in metadata:
+                    metadata_json = {}
+                    metadata_value = metadata['metadata_json']
+                    if isinstance(metadata_value, str):
+                        try:
+                            metadata_json = json.loads(metadata_value)
+                        except (json.JSONDecodeError, TypeError):
+                            metadata_json = {}
+                    elif isinstance(metadata_value, dict):
+                        metadata_json = metadata_value
+                    root_section = metadata_json.get('root_section')
+                    if root_section:
+                        values.add(root_section)
         return sorted(list(values))
 
     def lexical_search(
@@ -453,6 +507,7 @@ class ChromaDatabase(VectorDatabase):
                 chunk_id=metadata.get('chunk_id', doc_id),
                 document_id=UUID(str(metadata.get('document_id', '00000000-0000-0000-0000-000000000000'))),
                 section=metadata.get('section', ''),
+                root_section=metadata.get('root_section', ''),
                 source_url=metadata.get('source_url', ''),
                 text=text,
                 embedding=embedding,
@@ -581,6 +636,7 @@ class ChromaDatabase(VectorDatabase):
                                          '00000000-0000-0000-0000-000000000000')
                     )),
                     section=metadata_raw.get('section', ''),
+                    root_section=metadata_raw.get('root_section', ''),
                     source_url=metadata_raw.get('source_url', ''),
                     text=text,
                     embedding=embedding,

@@ -117,9 +117,38 @@ class TestParentContextEnricher(unittest.TestCase):
             embedding=[0.1] * 384,
             metadata_json={"root_section": "compound"},
         )
-        parent_identity = self.enricher.get_parent_identity(chunk)
+        parent_identity, fallback = self.enricher.get_parent_identity(chunk)
         self.assertEqual(parent_identity.document_id, self.doc_id)
         self.assertEqual(parent_identity.root_section, "compound")
+        self.assertFalse(fallback)
+
+    def test_get_parent_identity_fallback_when_root_section_missing(self):
+        """Missing root_section falls back to the chunk's section."""
+        chunk = VectorDocument(
+            chunk_id="legacy_chunk",
+            document_id=self.doc_id,
+            section="identifiers",
+            text="legacy code chunk",
+            embedding=[0.1] * 384,
+            metadata_json={},
+        )
+        parent_identity, fallback = self.enricher.get_parent_identity(chunk)
+        self.assertEqual(parent_identity.root_section, "identifiers")
+        self.assertTrue(fallback)
+
+    def test_get_parent_identity_fallback_when_empty_metadata(self):
+        """Empty metadata falls back to overview."""
+        chunk = VectorDocument(
+            chunk_id="legacy_chunk",
+            document_id=self.doc_id,
+            section="",
+            text="legacy chunk",
+            embedding=[0.1] * 384,
+            metadata_json={},
+        )
+        parent_identity, fallback = self.enricher.get_parent_identity(chunk)
+        self.assertEqual(parent_identity.root_section, "overview")
+        self.assertTrue(fallback)
 
     def test_reconstruct_parent_context_success(self):
         """Test reconstructing parent context from chunks."""
@@ -148,6 +177,32 @@ class TestParentContextEnricher(unittest.TestCase):
         self.assertEqual(context["num_chunks"], 3)
         self.assertEqual(len(context["text_parts"]), 3)
         self.assertIn("document_id", context["parent_identity"])
+
+    def test_reconstruct_parent_context_sections_included_is_deterministic(self):
+        """sections_included must preserve first-encounter order, not a set."""
+        chunks = [
+            VectorDocument(
+                chunk_id=f"chunk_{i}",
+                document_id=self.doc_id,
+                section=section,
+                text=f"Text {i}",
+                embedding=[float(i)] * 384,
+                metadata_json={"root_section": "root"},
+            )
+            for i, section in enumerate(["codes", "names", "codes", "root", "names"])
+        ]
+        self.mock_db.get_documents.return_value = chunks
+
+        parent_identity = ParentIdentity(
+            document_id=self.doc_id, root_section="root"
+        )
+        context = self.enricher.reconstruct_parent_context(parent_identity)
+
+        self.assertIsNotNone(context)
+        self.assertEqual(
+            context["sections_included"],
+            ["codes", "names", "root"],
+        )
 
     def test_reconstruct_parent_context_exclude_sections(self):
         """Test excluding sections from parent context."""
@@ -280,7 +335,8 @@ class TestParentContextEnricher(unittest.TestCase):
             for i in range(4)
         ]
 
-        self.mock_db.get_documents.return_value = chunks
+        # New backends expose get_root_sections; use it when available.
+        self.mock_db.get_root_sections.return_value = ["compound", "root"]
 
         parents = self.enricher.get_all_parents_in_document(self.doc_id)
 
@@ -291,7 +347,7 @@ class TestParentContextEnricher(unittest.TestCase):
 
     def test_get_all_parents_empty_document(self):
         """Test getting parents for document with no chunks."""
-        self.mock_db.get_documents.return_value = []
+        self.mock_db.get_root_sections.return_value = []
 
         parents = self.enricher.get_all_parents_in_document(self.doc_id)
 
@@ -352,7 +408,7 @@ class TestParentChildIntegration(unittest.TestCase):
         query_chunk = chunks[1]
 
         # Get parent identity
-        parent_identity = self.enricher.get_parent_identity(query_chunk)
+        parent_identity, _ = self.enricher.get_parent_identity(query_chunk)
         self.assertEqual(parent_identity.root_section, "root")
 
         # Reconstruct parent context
@@ -462,7 +518,7 @@ class TestParentEnricherMetricsAndTruncation(unittest.TestCase):
             section="query",
             text="query text",
             embedding=[0.1] * 384,
-            metadata_json={},
+            metadata_json={"root_section": "root"},
         )
         # Build a parent context with text parts that exceed a small limit
         long_text = "x" * 600
@@ -488,20 +544,21 @@ class TestParentEnricherMetricsAndTruncation(unittest.TestCase):
 
         self.assertTrue(enriched.get("parent_text_truncated"))
         self.assertEqual(enriched.get("parent_text_truncated_chars"), 200)
+        self.assertFalse(enriched.get("parent_grouping_fallback_used", False))
         snap = self.metrics.snapshot()
         self.assertGreaterEqual(
             snap["counters"].get("parent_text.truncated", 0), 1
         )
 
-    def test_truncation_flag_absent_when_under_limit(self):
-        """No truncation flag when aggregated text fits within the limit."""
+    def test_truncation_flag_false_when_under_limit(self):
+        """Aggregated text under the limit sets parent_text_truncated=False."""
         chunk = VectorDocument(
             chunk_id="query_chunk",
             document_id=self.doc_id,
             section="query",
             text="query text",
             embedding=[0.1] * 384,
-            metadata_json={},
+            metadata_json={"root_section": "root"},
         )
         parent_context = {
             "parent_identity": {
@@ -517,8 +574,36 @@ class TestParentEnricherMetricsAndTruncation(unittest.TestCase):
         enriched = self.enricher.enrich_chunk_with_parent(
             chunk, parent_context=parent_context, include_parent_text=True
         )
-        self.assertNotIn("parent_text_truncated", enriched)
         self.assertIn("parent_text_summary", enriched)
+        self.assertFalse(enriched.get("parent_text_truncated", True))
+        self.assertFalse(enriched.get("parent_grouping_fallback_used", False))
+
+    def test_fallback_flag_set_for_legacy_chunk(self):
+        """Legacy chunks without root_section flag the fallback when reconstructing."""
+        chunk = VectorDocument(
+            chunk_id="legacy_chunk",
+            document_id=self.doc_id,
+            section="identifiers",
+            text="legacy code chunk",
+            embedding=[0.1] * 384,
+            metadata_json={},
+        )
+        sibling = VectorDocument(
+            chunk_id="sibling_chunk",
+            document_id=self.doc_id,
+            section="identifiers",
+            text="sibling chunk",
+            embedding=[0.2] * 384,
+            metadata_json={},
+        )
+        self.mock_db.get_documents.return_value = [chunk, sibling]
+
+        enriched = self.enricher.enrich_chunk_with_parent(
+            chunk, parent_context=None, include_parent_text=True
+        )
+
+        self.assertTrue(enriched.get("parent_grouping_fallback_used"))
+        self.assertTrue(enriched["parent_context"].get("parent_grouping_fallback_used"))
 
 
 class TestBackendSectionFilterAndExclusion(unittest.TestCase):
@@ -554,17 +639,15 @@ class TestBackendSectionFilterAndExclusion(unittest.TestCase):
         )
         self.enricher.reconstruct_parent_context(parent_identity)
 
-        # Inspect the call arguments: sections= must include the root
+        # Inspect the call arguments: root_sections= must include the root
         # section name, limit= must be a positive int.
         call = self.mock_db.get_documents.call_args
         self.assertIsNotNone(call, "Expected get_documents to be called")
         kwargs = call.kwargs
         self.assertEqual(kwargs.get("substance_uuid"), self.doc_id)
-        self.assertIn("names", kwargs.get("sections") or [])
+        self.assertIn("names", kwargs.get("root_sections") or [])
         self.assertIsInstance(kwargs.get("limit"), int)
         self.assertGreater(kwargs["limit"], 0)
-        # And the helper that drives the filter must agree.
-        self.assertIn("names", sections_in_root("names"))
 
     def test_reconstruct_falls_back_when_backend_rejects_kwargs(self):
         """A backend that doesn't accept sections/limit must still work."""

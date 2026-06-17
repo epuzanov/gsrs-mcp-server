@@ -82,59 +82,31 @@ class ParentContextEnricher:
         self.vector_db = vector_db
         self.metrics = metrics if metrics is not None else InMemoryMetrics()
 
-    @staticmethod
-    def extract_root_section(chunk: VectorDocument) -> str:
-        """
-        Extract the root section identifier from a chunk.
 
-        The root section represents the top-level section of a document.
-        For most chunks, this is determined by their section field or metadata.
-
-        Args:
-            chunk: VectorDocument to extract root section from
-
-        Returns:
-            Root section identifier (e.g., "root", "compound", "protein")
-        """
-        # Priority order for determining root section:
-        # 1. Explicit root_section in metadata
-        metadata = chunk.metadata_json or {}
-        if "root_section" in metadata:
-            return str(metadata["root_section"])
-
-        # 2. Hierarchy information (parent_section)
-        if "hierarchy" in metadata and isinstance(metadata["hierarchy"], dict):
-            parent_section = metadata["hierarchy"].get("parent_section")
-            if parent_section:
-                return str(parent_section)
-
-        # 3. Use section if it's a top-level section (root, compound, etc.)
-        if chunk.section:
-            # Simple heuristic: if section is "overview", it's the root section itself
-            if chunk.section.lower() == "overview":
-                return "overview"
-            # Otherwise, look at metadata for the top-level parent
-            # For now, treat the section as the root unless it's a subsection
-            return chunk.section
-
-        # Fallback to "overview"
-        return "overview"
-
-    def get_parent_identity(self, chunk: VectorDocument) -> ParentIdentity:
+    def get_parent_identity(self, chunk: VectorDocument) -> Tuple[ParentIdentity, bool]:
         """
         Get the virtual parent identity for a chunk.
 
-        Args:
-            chunk: VectorDocument to identify parent for
-
         Returns:
-            ParentIdentity identifying the parent
+            A tuple of (ParentIdentity, fallback_used) where ``fallback_used``
+            is True when the chunk did not have an explicit ``root_section``
+            or hierarchy in its metadata. The chunker now writes the
+            ``root_section`` as a dedicated column, but metadata is still
+            checked for backwards compatibility with older indexes.
         """
+        metadata = chunk.metadata_json or {}
+        explicit_root = "root_section" in metadata
+        explicit_hierarchy = (
+            isinstance(metadata.get("hierarchy"), dict)
+            and metadata["hierarchy"].get("parent_section")
+        )
         root_section = self.extract_root_section(chunk)
-        return ParentIdentity(
+        fallback_used = not (explicit_root or explicit_hierarchy)
+        identity = ParentIdentity(
             document_id=chunk.document_id,
             root_section=root_section,
         )
+        return identity, fallback_used
 
     def reconstruct_parent_context(
         self,
@@ -186,34 +158,44 @@ class ParentContextEnricher:
     ) -> Optional[Dict[str, Any]]:
         """Inner reconstruction logic, isolated for clean latency wrapping.
 
-        Pushes the section filter down to the vector store so PGVector /
-        Chroma can use indexed column filters. As a safety net, also filters
-        in Python so that legacy chunks whose ``root_section`` is the global
-        ``"overview"`` (i.e. produced by the pre-alignment chunker) still
-        match correctly.
+        Pushes the filter down to the vector store so PGVector / Chroma can
+        use indexed column filters. We request chunks by `root_section`
+        when the backend supports it; otherwise we fall back to the concrete
+        `sections` list (the previous behaviour). The in-Python filter is
+        still applied as a safety net for legacy data and for
+        `exclude_chunk_ids`.
         """
-        parent_sections = sections_in_root(parent_identity.root_section)
-
-        # Push the section filter down to the backend.
+        # Try the indexed root_section filter first.
         try:
             parent_chunks = self.vector_db.get_documents(
                 substance_uuid=parent_identity.document_id,
-                sections=parent_sections,
+                root_sections=[parent_identity.root_section],
                 limit=_DEFAULT_PARENT_BACKEND_LIMIT,
             )
         except TypeError:
-            # Backends that don't yet accept sections/limit fall back to
-            # the whole-document fetch.
-            parent_chunks = self.vector_db.get_documents(
-                substance_uuid=parent_identity.document_id
-            )
+            # Backends that don't yet accept root_sections fall back to
+            # the concrete section list.
+            parent_sections = sections_in_root(parent_identity.root_section)
+            try:
+                parent_chunks = self.vector_db.get_documents(
+                    substance_uuid=parent_identity.document_id,
+                    sections=parent_sections,
+                    limit=_DEFAULT_PARENT_BACKEND_LIMIT,
+                )
+            except TypeError:
+                # Backends that don't accept sections/limit either fall back
+                # to the whole-document fetch.
+                parent_chunks = self.vector_db.get_documents(
+                    substance_uuid=parent_identity.document_id
+                )
 
         if not parent_chunks:
             return None
 
         # Defensive in-Python filter for legacy data and the
         # ``exclude_chunk_ids`` case (the backend only knows about
-        # ``section``; chunk_id exclusion has to happen here).
+        # ``section`` / ``root_section``; chunk_id exclusion has to happen
+        # here).
         filtered_chunks = []
         for chunk in parent_chunks:
             if self.extract_root_section(chunk) != parent_identity.root_section:
@@ -228,14 +210,21 @@ class ParentContextEnricher:
         if not parent_chunks:
             return None
 
-        # Build parent context from chunks
+        # Build parent context from chunks, preserving the order in which
+        # sections first appear across the returned chunks. Deterministic
+        # output avoids noisy tests/snapshots and inconsistent MCP text.
+        seen_sections: List[str] = []
+        for chunk in parent_chunks:
+            if chunk.section and chunk.section not in seen_sections:
+                seen_sections.append(chunk.section)
+
         parent_context = {
             "parent_identity": {
                 "document_id": str(parent_identity.document_id),
                 "root_section": parent_identity.root_section,
             },
             "num_chunks": len(parent_chunks),
-            "sections_included": list(set(c.section for c in parent_chunks if c.section)),
+            "sections_included": seen_sections,
             "text_parts": [],
             "metadata_unified": {},
         }
@@ -291,12 +280,12 @@ class ParentContextEnricher:
 
         Returns:
             Dictionary with chunk data and parent context. When
-            ``include_parent_text`` is true and the aggregated text was cut
-            down to fit ``parent_text_limit``, the result includes
-            ``parent_text_truncated: true`` so callers can detect lossy
+            `include_parent_text` is true and the aggregated text was cut
+            down to fit `parent_text_limit`, the result includes
+            `parent_text_truncated: true` so callers can detect lossy
             summaries.
         """
-        enriched = {
+        enriched: Dict[str, Any] = {
             "chunk": {
                 "document_id": str(chunk.document_id),
                 "section": chunk.section,
@@ -307,10 +296,14 @@ class ParentContextEnricher:
             },
         }
 
+        # Determine whether this chunk relies on the legacy fallback
+        # before we possibly reconstruct the parent context.
+        _, fallback_used = self.get_parent_identity(chunk)
+
         # Get or reconstruct parent context. Exclude the child by chunk_id
         # (not by section) so siblings in the same section are preserved.
         if parent_context is None:
-            parent_identity = self.get_parent_identity(chunk)
+            parent_identity, _ = self.get_parent_identity(chunk)
             parent_context = self.reconstruct_parent_context(
                 parent_identity,
                 exclude_chunk_ids={chunk.chunk_id},
@@ -318,6 +311,10 @@ class ParentContextEnricher:
 
         if parent_context:
             enriched["parent_context"] = parent_context
+            if fallback_used:
+                enriched["parent_grouping_fallback_used"] = True
+                enriched["parent_context"]["parent_grouping_fallback_used"] = True
+
             if include_parent_text and parent_context.get("text_parts"):
                 # Aggregate parent text, respecting the parts and char limits.
                 aggregated_parts = parent_context["text_parts"][
@@ -333,8 +330,8 @@ class ParentContextEnricher:
                     truncated = True
                     self.metrics.increment("parent_text.truncated")
                 enriched["parent_text_summary"] = parent_text
+                enriched["parent_text_truncated"] = truncated
                 if truncated:
-                    enriched["parent_text_truncated"] = True
                     enriched["parent_text_truncated_chars"] = parent_text_limit
 
         return enriched
@@ -383,7 +380,7 @@ class ParentContextEnricher:
         enriched_results = []
         for result in results:
             chunk = result.document
-            parent_identity = self.get_parent_identity(chunk)
+            parent_identity, fallback_used = self.get_parent_identity(chunk)
             raw_parent = _get_or_build_parent(parent_identity)
 
             # Strip the child chunk's text part out of the cached parent so
@@ -401,6 +398,10 @@ class ParentContextEnricher:
                 parent_text_limit=parent_text_limit,
             )
             enriched["score"] = result.score
+            if fallback_used:
+                enriched["parent_grouping_fallback_used"] = True
+                if enriched.get("parent_context"):
+                    enriched["parent_context"]["parent_grouping_fallback_used"] = True
 
             enriched_results.append(enriched)
 
@@ -452,12 +453,68 @@ class ParentContextEnricher:
         Returns:
             List of unique ParentIdentity objects
         """
+        # Use the backend's native aggregation when available; otherwise
+        # fall back to fetching all chunks and deriving parents in Python.
+        try:
+            root_sections = self.vector_db.get_root_sections(substance_uuid=document_id)
+        except (AttributeError, TypeError):
+            root_sections = []
+
+        if root_sections:
+            return sorted(
+                [ParentIdentity(document_id=document_id, root_section=rs) for rs in root_sections],
+                key=lambda p: p.root_section,
+            )
+
         all_chunks = self.vector_db.get_documents(substance_uuid=document_id)
         if not all_chunks:
             return []
 
         parent_identities: Set[ParentIdentity] = set()
         for chunk in all_chunks:
-            parent_identities.add(self.get_parent_identity(chunk))
+            parent_identity, _ = self.get_parent_identity(chunk)
+            parent_identities.add(parent_identity)
 
         return sorted(parent_identities, key=lambda p: p.root_section)
+
+    @staticmethod
+    def extract_root_section(chunk: VectorDocument) -> str:
+        """
+        Extract the root section identifier from a chunk.
+
+        The root section represents the top-level section of a document and
+        drives parent-child grouping. Newly chunked data writes
+        ``root_section`` as a dedicated column on ``VectorDocument`` and
+        also keeps it in ``metadata_json`` for backwards compatibility. This
+        method prefers the column value, then metadata, then hierarchy, and
+        finally falls back to the chunk's own ``section`` for legacy data.
+
+        Args:
+            chunk: VectorDocument to extract root section from
+
+        Returns:
+            Root section identifier (e.g. "overview", "codes", "names")
+        """
+        # 1. Dedicated column -- preferred for newly indexed data.
+        if getattr(chunk, "root_section", None):
+            return str(chunk.root_section)
+
+        # 2. Explicit root_section in metadata -- backwards compatibility.
+        metadata = chunk.metadata_json or {}
+        if "root_section" in metadata:
+            return str(metadata["root_section"])
+
+        # 3. Hierarchy information (parent_section) from older chunkers.
+        hierarchy = metadata.get("hierarchy")
+        if isinstance(hierarchy, dict):
+            parent_section = hierarchy.get("parent_section")
+            if parent_section:
+                return str(parent_section)
+
+        # 4. Legacy / missing root_section: fall back to the chunk's own
+        #    section. This is safe but may group sub-optimally; callers can
+        #    detect the fallback via ``parent_grouping_fallback_used``.
+        if chunk.section:
+            return chunk.section
+
+        return "overview"

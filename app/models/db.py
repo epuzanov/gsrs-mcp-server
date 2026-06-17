@@ -53,6 +53,11 @@ class VectorDocument(Base):
     # Section name (e.g., "root", "names", "codes", "structure", "references")
     section: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
 
+    # Root section for parent-child retrieval (e.g., "overview", "codes", "definitions").
+    # Normally equal to ``section`` for top-level sections; for sub-sections such as
+    # ``identifiers`` or ``chemical`` this points to the parent root.
+    root_section: Mapped[str] = mapped_column(String(256), nullable=False, index=True, default="overview")
+
     # Source URL/name (system-generated, from gsrs.model)
     source_url: Mapped[Optional[str]] = mapped_column(String(256), nullable=True, index=True)
 
@@ -86,6 +91,8 @@ class VectorDocument(Base):
     __table_args__ = (
         Index('idx_document_id', 'document_id'),
         Index('idx_section', 'section'),
+        Index('idx_root_section', 'root_section'),
+        Index('idx_root_section_document_id', 'root_section', 'document_id'),
         Index('idx_source_url', 'source_url'),
         Index('idx_search_tsv', 'search_tsv', postgresql_using='gin'),
         Index(
@@ -107,6 +114,7 @@ class VectorDocument(Base):
         return {
             "document_id": self.document_id,
             "section": self.section,
+            "root_section": self.root_section,
             "source_url": self.source_url,
             "text": self.text,
             "embedding": self.embedding,
@@ -118,6 +126,7 @@ class VectorDocument(Base):
                     self.metadata_json["display_name"] if self.metadata_json.get("display_name") else "",
                     self.metadata_json["chunk_type"] if self.metadata_json.get("chunk_type") else "",
                     self.section if self.section else "",
+                    self.root_section if self.root_section else "",
                 ])
             )
         }

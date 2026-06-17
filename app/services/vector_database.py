@@ -157,6 +157,7 @@ class VectorDatabaseService(VectorDatabase):
         doc_id: Optional[str] = None,
         substance_uuid: Optional[UUID] = None,
         sections: Optional[List[str]] = None,
+        root_sections: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> List[VectorDocument]:
         """
@@ -165,8 +166,9 @@ class VectorDatabaseService(VectorDatabase):
         Args:
             doc_id: Optional document ID to retrieve a specific document
             substance_uuid: Optional substance UUID to retrieve all documents for a substance
-            sections: Optional list of section names to filter results (requires substance_uuid).
+            sections: Optional list of section names to filter results.
                      Results are sorted in the order provided. Use OR logic if multiple sections.
+            root_sections: Optional list of root section names to filter results.
             limit: Optional limit on number of results
 
         Returns:
@@ -176,8 +178,16 @@ class VectorDatabaseService(VectorDatabase):
             doc_id=doc_id,
             substance_uuid=substance_uuid,
             sections=sections,
+            root_sections=root_sections,
             limit=limit
         )
+
+    def get_root_sections(
+        self,
+        substance_uuid: Optional[UUID] = None,
+    ) -> List[str]:
+        """Get distinct root_sections, optionally scoped to a substance."""
+        return self._ensure_db().get_root_sections(substance_uuid)
 
     def get_unique_values(self, field: str) -> List[str]:
         """Get unique values for a field."""

@@ -319,6 +319,7 @@ class SubstanceChunker:
             chunk_id=chunk_id,
             document_id=UUID(document_id) if document_id else UUID(int=0),
             section=section,
+            root_section=root_section,
             text=text,
             embedding=[],
             metadata_json=meta,

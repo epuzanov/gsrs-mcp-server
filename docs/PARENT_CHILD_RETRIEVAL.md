@@ -406,6 +406,27 @@ The implementation gracefully handles:
    (`vector_db.get_documents(substance_uuid=..., sections=[...], limit=...)`).
 4. **Existing RAG Flow**: Non-breaking additions to existing tools.
 
+### `root_section` column
+
+`rag_query` groups chunks by a dedicated `root_section` column on every
+`VectorDocument` chunk. The chunker writes this value automatically for newly
+ingested data. Existing vector stores that only have `root_section` inside
+`metadata_json` will still work, but parent grouping may be less accurate until
+the data is reingested. Re-ingest existing data with `rag_ingest` or the bulk
+loader to populate the column and get correct hierarchical grouping.
+
+The database layer exposes `root_section` filtering and aggregation directly:
+
+- `vector_db.get_documents(substance_uuid=..., root_sections=["codes"])` returns
+  all chunks whose root section is `codes`.
+- `vector_db.get_root_sections(substance_uuid=...)` returns the distinct root
+  sections for a substance (or across the whole store if no UUID is passed).
+
+When a chunk is missing the `root_section` column, the enricher falls back to
+`metadata_json["root_section"]`, then hierarchy metadata, then the chunk's own
+`section`. This is safe but may group sub-optimally; the response may include
+`parent_grouping_fallback_used: true`.
+
 ## Re-ingesting Existing Data
 
 Existing data ingested before the new chunker will have every chunk

@@ -333,6 +333,7 @@ async def rag_query(
     """
     _ensure_runtime_initialized()
     tool = _tool_call("rag_query", query_type="rag_with_parent")
+    try:
         if not runtime.retrieval_available():
             reason = runtime.retrieval_unavailable_reason()
             tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
@@ -379,6 +380,9 @@ async def rag_query(
                 if "parent_text_summary" in enriched:
                     parent_text = enriched["parent_text_summary"]
                     lines.append(f"   Parent Summary: {parent_text[:300]}..." if len(parent_text) > 300 else f"   Parent Summary: {parent_text}")
+                lines.append(f"   parent_text_truncated: {enriched.get('parent_text_truncated', False)}")
+                if enriched.get("parent_grouping_fallback_used"):
+                    lines.append("   parent_grouping_fallback_used: true")
 
         return "\n".join(lines)
     except Exception as exc:

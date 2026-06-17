@@ -452,9 +452,10 @@ class PGVectorDatabase(VectorDatabase):
         doc_id: Optional[str] = None,
         substance_uuid: Optional[UUID] = None,
         sections: Optional[List[str]] = None,
+        root_sections: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> List[VectorDocument]:
-        """Get documents with flexible filtering and section sorting using array_position."""
+        """Get documents with flexible filtering and section/root_section sorting using array_position."""
         session = self._get_session()
         try:
             # Query by doc_id (chunk_id)
@@ -464,11 +465,14 @@ class PGVectorDatabase(VectorDatabase):
                 ).first()
                 return [chunk] if chunk else []
 
-            # Query by substance (with optional sections filter)
+            # Query by substance (with optional sections/root_sections filter)
             if substance_uuid is not None:
                 query = session.query(VectorDocument).filter(
                     VectorDocument.document_id == substance_uuid
                 )
+
+                if root_sections is not None and len(root_sections) > 0:
+                    query = query.filter(VectorDocument.root_section.in_(root_sections))
 
                 if sections is not None and len(sections) > 0:
                     # Filter by sections using OR logic
@@ -478,6 +482,12 @@ class PGVectorDatabase(VectorDatabase):
                     section_array = cast(sections, ARRAY(String))
                     order_expr = func.array_position(section_array, VectorDocument.section)
                     query = query.order_by(order_expr)
+                elif root_sections is not None and len(root_sections) > 0:
+                    root_section_array = cast(root_sections, ARRAY(String))
+                    order_expr = func.array_position(
+                        root_section_array, VectorDocument.root_section
+                    )
+                    query = query.order_by(order_expr)
 
                 if limit:
                     query = query.limit(limit)
@@ -486,6 +496,21 @@ class PGVectorDatabase(VectorDatabase):
 
             # No filters provided
             return []
+        finally:
+            session.close()
+
+    def get_root_sections(
+        self,
+        substance_uuid: Optional[UUID] = None,
+    ) -> List[str]:
+        """Get distinct root_sections, optionally scoped to a substance."""
+        session = self._get_session()
+        try:
+            q = session.query(distinct(VectorDocument.root_section))
+            if substance_uuid is not None:
+                q = q.filter(VectorDocument.document_id == substance_uuid)
+            results = q.all()
+            return sorted(r[0] for r in results if r[0])
         finally:
             session.close()
 
@@ -529,6 +554,9 @@ class PGVectorDatabase(VectorDatabase):
         try:
             if field == "section":
                 results = session.query(distinct(VectorDocument.section)).all()
+                return [r[0] for r in results if r[0]]
+            elif field == "root_section":
+                results = session.query(distinct(VectorDocument.root_section)).all()
                 return [r[0] for r in results if r[0]]
             elif field == "source_url":
                 results = session.query(distinct(VectorDocument.source_url)).all()

@@ -11,8 +11,8 @@ Compact MCP server for GSRS substance retrieval and live GSRS API lookup.
 
 ## Tools
 
-- `rag_query`: search locally ingested GSRS chunks and return evidence with parent context
-- `rag_query_chunks`: search local chunks and return raw chunk evidence (no parent context)
+- `rag_query`: child-level semantic search enriched with parent / root-section context. Each result shows the matching chunk plus reconstructed context from sibling chunks that share the same `(substance UUID, root_section)`.
+- `rag_query_chunks`: plain child/chunk-level semantic retrieval without parent enrichment.
 - `rag_ingest`: ingest one GSRS substance JSON document into the local vector store
 - `gsrs_get_substance`: fetch a full substance JSON document from the GSRS API
 - `gsrs_get_summary`: fetch a substance and return a markdown summary
@@ -22,7 +22,41 @@ Compact MCP server for GSRS substance retrieval and live GSRS API lookup.
 - `health`: return runtime health/readiness details
 - `statistics`: return local vector-store statistics
 
-The server does not synthesize final answers. `rag_query` returns grounded evidence so the MCP client or calling model can answer from the retrieved chunks.
+### When to use which RAG tool
+
+Use `rag_query` when an answer may depend on nearby or sibling section context — for example, a `codes` chunk is more useful when it is shown alongside the substance overview, names, and definitions from the same record.
+
+Use `rag_query_chunks` when you prefer minimal, focused chunk output and do not want sibling context mixed into the response.
+
+The server does not synthesize final answers. Both tools return grounded evidence so the MCP client or calling model can answer from the retrieved chunks.
+
+### RAG tool parameters
+
+`rag_query_chunks(query, top_k=8, filters="")` — plain chunk retrieval.
+
+`rag_query(query, top_k=8, include_parent_text=True, parent_text_limit=1000, filters="")` — chunk retrieval with parent context reconstruction. Parent context is rebuilt from all chunks that share the same `(document_id, root_section)`. The response exposes `Parent Context`, `Parent Summary`, and a `parent_text_truncated` flag when the summary is cut down to fit `parent_text_limit`.
+
+Example `rag_query` response shape:
+
+```text
+Found 3 local RAG result(s) with parent context for "aspirin mechanism":
+
+1. Score: `0.9523` | Section: `mechanisms`
+   Substance UUID: `550e8400-e29b-41d4-a716-446655440000`
+   Chunk: `mechanisms_550e8400-e29b-41d4-a716-446655440000_atomic_0`
+   Text: Irreversible inhibitor of cyclooxygenase (COX) enzymes...
+   **Parent Context**: 6 chunks in root, names, codes, definitions, mechanisms, references
+   Parent Summary: [root] Substance: Acetylsalicylic Acid | Class: chemical
+   parent_text_truncated: true
+```
+
+### Reindexing note
+
+`rag_query` groups chunks by a dedicated `root_section` column (also mirrored
+in chunk metadata). Vector stores indexed before this column existed will still
+return results, but parent grouping may be less accurate until the data is
+reingested. Re-ingest existing data with `rag_ingest` or the bulk loader to
+populate the column and get correct hierarchical grouping.
 
 ## Quick Start
 

@@ -89,22 +89,41 @@ class VectorDatabase(ABC):
         doc_id: Optional[str] = None,
         substance_uuid: Optional[UUID] = None,
         sections: Optional[List[str]] = None,
+        root_sections: Optional[List[str]] = None,
         limit: Optional[int] = None
     ) -> List[Any]:
         """
         Get documents with flexible filtering.
 
-        Query by document ID, substance UUID, or substance with specific sections.
+        Query by document ID, substance UUID, or substance with specific sections/root_sections.
 
         Args:
             doc_id: Optional chunk ID to retrieve document by chunk_id
             substance_uuid: Optional substance UUID to retrieve all documents for substance
             sections: Optional list of section names to filter results (requires substance_uuid).
                      Results are sorted in the order provided. Use OR logic if multiple sections.
+            root_sections: Optional list of root section names to filter results.
+                          May be used with or without substance_uuid depending on backend.
             limit: Optional limit on number of results
 
         Returns:
             List of documents matching the criteria
+        """
+        pass
+
+    @abstractmethod
+    def get_root_sections(
+        self,
+        substance_uuid: Optional[UUID] = None,
+    ) -> List[str]:
+        """
+        Get distinct root_sections, optionally scoped to a substance.
+
+        Args:
+            substance_uuid: Optional substance UUID to scope the aggregation.
+
+        Returns:
+            Sorted list of distinct root_section values.
         """
         pass
 
