@@ -40,14 +40,15 @@ def _display_name(data: dict[str, Any]) -> str:
     return "Unknown"
 
 
-def _section_header(title: str) -> list[str]:
+def _section_header(title: str, level: int = 2) -> list[str]:
     """Return a markdown section header with trailing blank line."""
-    return [f"## {title}", ""]
+    prefix = "#" * max(1, min(level, 6))
+    return [f"{prefix} {title}", ""]
 
 
 def _format_structure(structure: dict[str, Any]) -> list[str]:
     """Render a structure block for chemical/polymer summaries."""
-    md = _section_header("Structure")
+    md = _section_header("Structure", level=3)
     md.append(f"- **Formula:** {structure.get('formula') or structure.get('molecularFormula') or 'N/A'}")
     md.append(f"- **SMILES:** `{structure.get('smiles', 'N/A')}`")
     md.append(
@@ -156,11 +157,11 @@ def _format_codes(codes: list[Any]) -> list[str]:
 
     md: list[str] = []
     if identifiers:
-        md += _section_header("Identifiers")
+        md += _section_header("Identifiers", level=3)
         md += _format_table(identifiers, ["code_system", "code", "type", "comments"])
         md.append("")
     if classifications:
-        md += _section_header("Classifications")
+        md += _section_header("Classifications", level=3)
         md += _format_table(
             classifications, ["code_system", "code", "type", "comments"]
         )
@@ -220,7 +221,7 @@ def _format_protein(protein: dict[str, Any]) -> list[str]:
     """Render protein-specific details."""
     if not isinstance(protein, dict):
         return []
-    md = _section_header("Protein Details")
+    md = _section_header("Protein Details", level=3)
     md.append(f"- **Type:** {protein.get('proteinType', 'N/A')}")
     md.append(f"- **Subtype:** {protein.get('proteinSubType', 'N/A')}")
     md.append(f"- **Sequence Origin:** {protein.get('sequenceOrigin', 'N/A')}")
@@ -271,7 +272,7 @@ def _format_nucleic_acid(nucleic_acid: dict[str, Any]) -> list[str]:
     """Render nucleic-acid-specific details."""
     if not isinstance(nucleic_acid, dict):
         return []
-    md = _section_header("Nucleic Acid Details")
+    md = _section_header("Nucleic Acid Details", level=3)
     md.append(f"- **Type:** {nucleic_acid.get('nucleicAcidType', 'N/A')}")
     md.append(f"- **Sequence Type:** {nucleic_acid.get('sequenceType', 'N/A')}")
     sub_type = nucleic_acid.get("nucleicAcidSubType")
@@ -303,7 +304,7 @@ def _format_polymer(polymer: dict[str, Any]) -> list[str]:
     md: list[str] = []
     classification = polymer.get("classification")
     if isinstance(classification, dict):
-        md += _section_header("Polymer Classification")
+        md += _section_header("Polymer Classification", level=3)
         md.append(f"- **Class:** {classification.get('polymerClass', 'N/A')}")
         md.append(f"- **Geometry:** {classification.get('polymerGeometry', 'N/A')}")
         md.append(
@@ -314,13 +315,13 @@ def _format_polymer(polymer: dict[str, Any]) -> list[str]:
 
     display = polymer.get("displayStructure") or polymer.get("idealizedStructure")
     if isinstance(display, dict):
-        md += _section_header("Polymer Structure")
+        md += _section_header("Polymer Structure", level=3)
         md += _format_structure(display)
         md.append("")
 
     monomers = polymer.get("monomers") or []
     if monomers:
-        md += _section_header("Monomers")
+        md += _section_header("Monomers", level=3)
         rows: list[dict[str, Any]] = []
         for entry in monomers:
             if not isinstance(entry, dict):
@@ -342,7 +343,7 @@ def _format_mixture(mixture: dict[str, Any]) -> list[str]:
     """Render mixture-specific details."""
     if not isinstance(mixture, dict):
         return []
-    md = _section_header("Mixture Components")
+    md = _section_header("Mixture Components", level=3)
     components = mixture.get("components") or []
     rows: list[dict[str, Any]] = []
     for entry in components:
@@ -364,7 +365,7 @@ def _format_structurally_diverse(sd: dict[str, Any]) -> list[str]:
     """Render structurally-diverse (organism/whole-material) details."""
     if not isinstance(sd, dict):
         return []
-    md = _section_header("Source Material")
+    md = _section_header("Source Material", level=3)
     md.append(f"- **Class:** {sd.get('sourceMaterialClass', 'N/A')}")
     md.append(f"- **Type:** {sd.get('sourceMaterialType', 'N/A')}")
     md.append(f"- **State:** {sd.get('sourceMaterialState', 'N/A')}")
@@ -386,7 +387,7 @@ def _format_specified_substance(specified: dict[str, Any]) -> list[str]:
     """Render specified-substance-G1 constituent details."""
     if not isinstance(specified, dict):
         return []
-    md = _section_header("Specified Substance Constituents")
+    md = _section_header("Specified Substance Constituents", level=3)
     constituents = specified.get("constituents") or []
     rows: list[dict[str, Any]] = []
     for entry in constituents:
@@ -432,7 +433,7 @@ def _format_moieties(moieties: list[Any]) -> list[str]:
                 "stereochemistry": entry.get("stereochemistry"),
             }
         )
-    return _section_header("Moieties") + _format_table(
+    return _section_header("Moieties", level=3) + _format_table(
         rows,
         ["formula", "smiles", "molecular_weight", "count", "amount", "stereochemistry"],
     ) + [""]
