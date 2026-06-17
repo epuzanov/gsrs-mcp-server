@@ -500,7 +500,35 @@ async def gsrs_parametric_search(
     size: int = 20,
     fields: str = "",
 ) -> str:
-    """Search GSRS API with free text, fielded filters, and optional facets."""
+    """Search the GSRS API with free text, fielded filters, and optional facets.
+
+    GSRS indexes substance records with Lucene. Use this tool for general
+    substance lookup and for narrowing results by indexed fields.
+
+    Args:
+        query: Free-text search (names, codes, identifiers, etc.). GSRS promotes
+            exact matches in configured fields such as names and codes.
+        filters: JSON object of field:value terms, e.g.
+            {"root_substanceClass": "chemical", "root_status": "approved"}.
+            Multiple values for the same field can be passed as a list; they are
+            combined with OR. Different fields are combined with AND. Field names
+            use the indexed path, e.g. root_names_name, root_codes_code,
+            root_substanceClass.
+        facets: Comma-separated or JSON-array of facet filters. Each facet has
+            the form "Facet Name/Value". Example:
+            "Substance Class/chemical,Protein Type/ENZYME". Facets narrow the
+            result set to records that belong to the given category buckets
+            (combined with AND across facet groups). Use `gsrs_get_facets` to
+            discover which facet names and values are available for a query.
+        page: Page number (1-based).
+        size: Results per page (max 100).
+        fields: Comma-separated field list to return (server-dependent).
+
+    Examples:
+        query="ASPIRIN"
+        filters={"root_substanceClass": "chemical"}
+        facets="Substance Class/chemical"
+    """
     _ensure_runtime_initialized()
     tool = _tool_call("gsrs_parametric_search", query_type="parametric")
     try:
@@ -529,13 +557,104 @@ async def gsrs_parametric_search(
 
 
 @mcp.tool()
+async def gsrs_get_facets(
+    query: str = "*",
+    filters: str = "",
+    page: int = 1,
+    size: int = 20,
+) -> str:
+    """Discover available GSRS facet names and values for a search context.
+
+    GSRS search responses include Lucene facet buckets that categorize the
+    result set (e.g. "Substance Class", "Protein Type"). This tool returns
+    those buckets so you can build accurate `facets` arguments for
+    `gsrs_parametric_search`.
+
+    Args:
+        query: Free-text search context. Defaults to "*" so that all available
+            system facets are returned when no context is given. Provide a
+            query or filters to narrow the returned facet values to a specific
+            search context.
+        filters: JSON object of field:value filters (same format as
+            `gsrs_parametric_search`).
+        page: Page number (1-based).
+        size: Page size; keep small because facet metadata is requested.
+
+    Example:
+        query="*"
+        filters={"root_substanceClass": "protein"}
+
+    Returns a markdown list of facet groups and their top values/counts.
+    """
+    _ensure_runtime_initialized()
+    tool = _tool_call("gsrs_get_facets", query_type="facets")
+    try:
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
+            return f"GSRS API is currently unavailable: {reason}"
+
+        parsed_filters = _parse_json_object(filters, field_name="filters")
+        payload = runtime.gsrs_api.get_facets(
+            query=query,
+            filters=parsed_filters,
+            page=max(1, page),
+            size=max(1, min(size, 100)),
+        )
+        facets = payload.get("facets") or []
+        tool.finish("success", result_count=len(facets), citation_count=0)
+
+        if not facets:
+            return f"No facets available for this query context."
+
+        lines = [f"Found **{len(facets)}** facet group(s) for this query context:\n"]
+        for facet in facets:
+            name = facet.get("name", "Unknown")
+            values = facet.get("values") or []
+            lines.append(f"### {name}")
+            for value in values[:10]:
+                label = value.get("label") or value.get("value", "?")
+                count = value.get("count", 0)
+                lines.append(f"- `{label}` ({count})")
+            if len(values) > 10:
+                lines.append(f"- ... and {len(values) - 10} more")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"GSRS get facets error: {exc}"
+
+
+@mcp.tool()
 async def gsrs_structure_search(
     structure: str,
     search_type: Literal["exact", "exactplus", "sim", "substructure", "flex", "flexplus"] = "exact",
     cutoff: float = 0.8,
     size: int = 20,
 ) -> str:
-    """Search substances by chemical structure via the GSRS API."""
+    """Search substances by chemical structure via the GSRS API.
+
+    Provide a chemical structure as SMILES or InChI and choose a search type.
+
+    Args:
+        structure: Chemical structure string (SMILES or InChI).
+        search_type:
+            - exact: identical structure, tautomer included.
+            - exactplus: exact match plus related salts/solvates/tautomers.
+            - sim: global fingerprint similarity; uses `cutoff` (recommended 0.8).
+            - substructure: query is contained within the target structure.
+            - flex: ignores stereochemistry, isotope number, salts/solvates,
+              hydrates, tautomers, and mixtures.
+            - flexplus: searches by moiety only, ignoring stereochemistry.
+        cutoff: Tanimoto-Jaccard similarity cutoff for sim searches (0.0-1.0).
+            Ignored for other search types.
+        size: Max results (max 100).
+
+    Example:
+        structure="CC(=O)Oc1ccccc1C(=O)O"
+        search_type="sim"
+        cutoff=0.8
+    """
     _ensure_runtime_initialized()
     tool = _tool_call("gsrs_structure_search", query_type="structure")
     try:
@@ -565,7 +684,29 @@ async def gsrs_sequence_search(
     cutoff: float = 0.95,
     size: int = 20,
 ) -> str:
-    """Search substances by protein or nucleic-acid sequence via the GSRS API."""
+    """Search substances by protein or nucleic-acid sequence via the GSRS API.
+
+    Provide an amino-acid or nucleotide sequence and choose the alignment mode.
+
+    Args:
+        sequence: Amino-acid or nucleotide sequence. For proteins use one-letter
+            codes. Spaces, dashes, and numbers are cleaned automatically by GSRS.
+        search_type:
+            - GLOBAL: global alignment match; finds sequences similar to the
+              complete query (useful for full proteins/peptides/oligonucleotides).
+            - SUB: contains alignment match; finds the query motif within larger
+              sequences.
+        sequence_type: protein or nucleicAcid.
+        cutoff: Similarity/identity cutoff (0.0-1.0). A higher value requires a
+            closer match. Recommended: 0.98 for proteins, lower for short motifs.
+        size: Max results (max 100).
+
+    Example:
+        sequence="ACDEFGHIKLMNPQRSTVWY"
+        search_type="GLOBAL"
+        sequence_type="protein"
+        cutoff=0.98
+    """
     _ensure_runtime_initialized()
     tool = _tool_call("gsrs_sequence_search", query_type="sequence")
     try:

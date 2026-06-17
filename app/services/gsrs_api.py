@@ -98,6 +98,46 @@ class GsrsApiService:
     def _request_json(self, method: str, url: str, **kwargs: Any) -> Dict[str, Any]:
         return self._request(method, url, **kwargs).json()
 
+    def get_facets(
+        self,
+        query: str = "*",
+        filters: Optional[Dict[str, Any]] = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> Dict[str, Any]:
+        """Return available Lucene facet buckets for the current query context.
+
+        GSRS returns facet groups in search responses under the "facets" key.
+        This helper runs the same parametric query used by `parametric_search`
+        but asks only for facet metadata, which is useful for discovering the
+        facet names and values that can be passed to the `facets` argument of
+        `gsrs_parametric_search`.
+
+        Args:
+            query: Free-text search context. Defaults to "*" so that all
+                available system facets are returned when no context is given.
+            filters: Fielded filters (same format as `parametric_search`).
+            page: Page number (1-based).
+            size: Results per page (kept small because only facets are needed).
+
+        Returns:
+            GSRS API search response dict; examine the "facets" list for
+            available buckets. Each facet entry typically contains "name",
+            "value", and "count" fields.
+        """
+        q = self._build_parametric_query(query=query, filters=filters or {})
+        params: Dict[str, Any] = {
+            "q": q,
+            "page": page,
+            "size": size,
+        }
+        envelope = self._request_json(
+            "GET",
+            f"{self.base_url}/substances/search",
+            params=params,
+        )
+        return self._resolve_async_search(envelope, size)
+
     def _resolve_async_search(self, envelope: Dict[str, Any], size: int) -> Dict[str, Any]:
         status_payload = dict(envelope)
         if "content" in status_payload:
