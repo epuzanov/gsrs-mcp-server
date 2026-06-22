@@ -12,7 +12,7 @@ from starlette.responses import JSONResponse
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import Prompt, PromptMessage, TextContent, ToolAnnotations
 
 from app.config import settings
 from app.observability import ToolTelemetry, configure_logging
@@ -1062,3 +1062,76 @@ async def server_statistics_resource() -> str:
 
 if __name__ == "__main__":
     main()
+
+
+# ------------------------------------------------------------------
+# MCP Prompts: reusable guidance for common GSRS workflows
+# ------------------------------------------------------------------
+
+@mcp.prompt(name="substance_summary", title="Summarize a GSRS substance", description="Prompt template for fetching and summarizing a single GSRS substance record.")
+async def substance_summary_prompt(identifier: str) -> Prompt:
+    """Return a prompt that asks the LLM to summarize a GSRS substance."""
+    messages = [
+        {
+            "role": "user",
+            "content": TextContent(
+                type="text",
+                text=(
+                    f"Fetch the GSRS substance record for identifier `{identifier}` "
+                    "using the `gsrs_get_summary` tool (or the resource "
+                    "`gsrs://substances/{identifier}/summary`), and produce a concise "
+                    "human-readable summary. Include the preferred display name, "
+                    "approval ID, substance class, status, key identifiers, names, "
+                    "and any structural or biological details."
+                ),
+            ),
+        }
+    ]
+    return Prompt(name="substance_summary", title="Summarize a GSRS substance", messages=messages)
+
+
+@mcp.prompt(name="resolve_cv_terms", title="Resolve GSRS controlled vocabulary terms", description="Prompt template for decoding a GSRS controlled-vocabulary code using the CV resources.")
+async def resolve_cv_terms_prompt(domain: str, code: str) -> Prompt:
+    """Return a prompt that resolves a single CV code to its display label."""
+    messages = [
+        {
+            "role": "user",
+            "content": TextContent(
+                type="text",
+                text=(
+                    f"Look up the controlled vocabulary domain `{domain}` and resolve "
+                    f"the code `{code}` to its human-readable display value. Use the "
+                    f"resource `gsrs://cv/{domain}/terms` (or the tool "
+                    f"`gsrs_get_cv_terms` with domain `{domain}`). Explain what the "
+                    f"code means in the context of a GSRS substance record."
+                ),
+            ),
+        }
+    ]
+    return Prompt(name="resolve_cv_terms", title="Resolve GSRS controlled vocabulary terms", messages=messages)
+
+
+@mcp.prompt(name="rag_reasoning", title="Reason over local GSRS RAG results", description="Prompt template for grounded question answering using the local RAG store.")
+async def rag_reasoning_prompt(question: str) -> Prompt:
+    """Return a prompt that guides the LLM to answer from local RAG evidence."""
+    messages = [
+        {
+            "role": "user",
+            "content": TextContent(
+                type="text",
+                text=(
+                    f"Answer the following question using evidence from the local GSRS "
+                    f"RAG store: {question}\n\n"
+                    "Instructions:\n"
+                    "1. Use `rag_query` to retrieve the most relevant chunks with parent "
+                    "context.\n"
+                    "2. If results are sparse, also try `rag_query_chunks`.\n"
+                    "3. Cite the substance UUID and section for each piece of evidence.\n"
+                    "4. If the local store does not contain relevant data, say so and "
+                    "do not invent facts.\n"
+                    "5. Keep the answer concise and grounded in the retrieved text."
+                ),
+            ),
+        }
+    ]
+    return Prompt(name="rag_reasoning", title="Reason over local GSRS RAG results", messages=messages)

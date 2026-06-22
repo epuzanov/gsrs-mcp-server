@@ -29,6 +29,8 @@ class EmbeddingService:
         timeout: float = 60.0,
         max_retries: int = 2,
         retry_backoff_ms: int = 250,
+        send_dimensions: bool = False,
+        send_encoding_format: bool = False,
     ):
         """
         Initialize embeddings service.
@@ -37,8 +39,16 @@ class EmbeddingService:
             api_key: API key for authentication
             model: Model name (default: text-embedding-3-small)
             url: Full embeddings endpoint URL
-            dimension: Embedding dimension (default: 1536)
+            dimension: Embedding dimension (default: 1536). Used for client-side
+                validation of the response length; only sent in the request payload
+                when ``send_dimensions`` is true (OpenAI v3 supports the
+                ``dimensions`` truncation param; most other providers do not).
             verify_ssl: Whether to verify TLS certificates (default: True)
+            send_dimensions: Whether to include ``dimensions`` in the request
+                payload (OpenAI-only; off by default for portability).
+            send_encoding_format: Whether to include ``encoding_format: float``
+                in the request payload (OpenAI-only; off by default for
+                portability — LiteLLM-in-front-of-Ollama rejects it).
         """
         self.api_key = api_key
         self.model = model
@@ -48,6 +58,8 @@ class EmbeddingService:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_backoff_ms = retry_backoff_ms
+        self.send_dimensions = send_dimensions
+        self.send_encoding_format = send_encoding_format
         self._client: httpx.Client | None = None
 
     @property
@@ -66,10 +78,18 @@ class EmbeddingService:
     def _build_payload(self, input_data: str | List[str]) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
-            "dimensions": self.dimension,
             "input": input_data,
         }
-        if self.url.endswith("/embeddings"):
+        # ``dimensions`` is only honored by OpenAI v3 models. Most
+        # OpenAI-compatible providers (Ollama, vLLM, LiteLLM routing to
+        # non-OpenAI backends) reject it with a 400. Only include it
+        # when the operator has explicitly opted in.
+        if self.send_dimensions and self.dimension > 0:
+            payload["dimensions"] = self.dimension
+        # ``encoding_format: float`` is OpenAI-only. LiteLLM rejects it
+        # for Ollama-served models with a 400 (UnsupportedParamsError).
+        # Only include it when the operator has explicitly opted in.
+        if self.send_encoding_format and self.url.endswith("/embeddings"):
             payload["encoding_format"] = "float"
         return payload
 
@@ -123,7 +143,8 @@ class EmbeddingService:
                 time.sleep(self.retry_backoff_ms / 1000)
 
         raise RuntimeError(
-            f"Embedding request failed after {self.max_retries + 1} attempt(s): {last_error}"
+            f"Embedding request failed after {self.max_retries + 1} attempt(s) "
+            f"against {self.url}: {last_error}"
         ) from last_error
 
     def get_model_info(self) -> dict:
@@ -135,6 +156,8 @@ class EmbeddingService:
             "url": self.url,
             "verify_ssl": self.verify_ssl,
             "timeout": self.timeout,
+            "send_dimensions": self.send_dimensions,
+            "send_encoding_format": self.send_encoding_format,
         }
 
     def close(self):

@@ -1,4 +1,4 @@
-"""Contract tests for the compact MCP tool surface and resources."""
+"""Contract tests for the compact MCP tool surface, resources, and prompts."""
 import ast
 import unittest
 from pathlib import Path
@@ -34,6 +34,12 @@ class TestCompactToolContract(unittest.TestCase):
         "server://statistics",
     ]
 
+    EXPECTED_PROMPTS = {
+        "substance_summary",
+        "resolve_cv_terms",
+        "rag_reasoning",
+    }
+
     def _decorated_functions(self, decorator_attr: str):
         """Yield every function decorated with a given mcp attribute."""
         source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
@@ -56,6 +62,10 @@ class TestCompactToolContract(unittest.TestCase):
     def _resource_decorators(self):
         """Yield every function decorated with @mcp.resource(...) in app/main.py."""
         yield from self._decorated_functions("resource")
+
+    def _prompt_decorators(self):
+        """Yield every function decorated with @mcp.prompt(...) in app/main.py."""
+        yield from self._decorated_functions("prompt")
 
     def test_main_exposes_only_compact_tool_surface(self):
         """The server should not drift back toward the old broad tool set."""
@@ -135,3 +145,15 @@ class TestCompactToolContract(unittest.TestCase):
                 if isinstance(uri, ast.Constant):
                     uris.append(uri.value)
         self.assertEqual(sorted(uris), sorted(self.EXPECTED_RESOURCE_URIS))
+
+    def test_main_exposes_expected_prompts(self):
+        """Prompts should provide reusable guidance for common GSRS workflows."""
+        names = set()
+        for _, decorator in self._prompt_decorators():
+            for keyword in decorator.keywords or []:
+                if keyword.arg == "name":
+                    value = keyword.value
+                    if isinstance(value, ast.Constant):
+                        names.add(value.value)
+                    break
+        self.assertEqual(names, self.EXPECTED_PROMPTS)

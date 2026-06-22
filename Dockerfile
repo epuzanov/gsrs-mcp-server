@@ -21,6 +21,10 @@ COPY pyproject.toml README.md ./
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
+# Copy CA Certificates
+COPY LICENSE ca-certificates.cr[t] /usr/local/share/ca-certificates/
+RUN rm /usr/local/share/ca-certificates/LICENSE && update-ca-certificates
+
 # Install the local package so the documented CLI entrypoint is available in the image.
 RUN pip install --no-cache-dir . --no-deps
 

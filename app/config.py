@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     embedding_timeout: float = _get_float_env("EMBEDDING_TIMEOUT", 30.0)
     embedding_max_retries: int = _get_int_env("EMBEDDING_MAX_RETRIES", 2)
     embedding_retry_backoff_ms: int = _get_int_env("EMBEDDING_RETRY_BACKOFF_MS", 250)
+    # OpenAI-only request-payload toggles. Both default to False so the
+    # server works against any OpenAI-compatible provider (Ollama, vLLM,
+    # LiteLLM routing to non-OpenAI backends) out of the box. Set these
+    # to True only when talking to OpenAI's own embeddings API.
+    embedding_send_dimensions: bool = _get_bool_env("EMBEDDING_SEND_DIMENSIONS", False)
+    embedding_send_encoding_format: bool = _get_bool_env("EMBEDDING_SEND_ENCODING_FORMAT", False)
 
     # SubstanceChunker Configuration (ChunkerConfig fine-tuning)
     # See app.services.chunker.ChunkerConfig

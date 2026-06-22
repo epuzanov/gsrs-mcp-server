@@ -38,6 +38,8 @@ class ServerRuntime:
             timeout=app_settings.embedding_timeout,
             max_retries=app_settings.embedding_max_retries,
             retry_backoff_ms=app_settings.embedding_retry_backoff_ms,
+            send_dimensions=app_settings.embedding_send_dimensions,
+            send_encoding_format=app_settings.embedding_send_encoding_format,
         )
         self.gsrs_api = GsrsApiService(
             base_url=app_settings.gsrs_api_url,
