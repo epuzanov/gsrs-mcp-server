@@ -114,7 +114,9 @@ mcp = FastMCP(
         "Resources: gsrs://substances/{identifier} for raw JSON, gsrs://substances/{identifier}/summary for markdown summary, "
         "gsrs://cv/domains for controlled vocabulary domain list, gsrs://cv/{domain}/terms for controlled vocabulary lookup, "
         "and server://health / server://statistics for runtime state. "
-        "Use get_parent_context to explore parent context for specific chunks."
+        "Use get_parent_context to explore parent context for specific chunks. "
+        "Prompts: fetch_substance and substance_summary for GSRS record lookup; "
+        "resolve_cv_terms to decode CV codes; rag_reasoning to answer from the local RAG store."
     ),
     token_verifier=token_verifier,
     auth=auth,
@@ -309,7 +311,7 @@ async def rag_query_chunks(
 @mcp.tool(
     annotations=ToolAnnotations(
         readOnlyHint=False,
-        destructiveHint=False,
+        destructiveHint=True,
         idempotentHint=True,
         openWorldHint=False,
     )
@@ -1067,6 +1069,28 @@ if __name__ == "__main__":
 # ------------------------------------------------------------------
 # MCP Prompts: reusable guidance for common GSRS workflows
 # ------------------------------------------------------------------
+
+@mcp.prompt(name="fetch_substance", title="Fetch a GSRS substance record", description="Prompt template for fetching the complete raw GSRS substance JSON document by UUID or approval identifier.")
+async def fetch_substance_prompt(identifier: str) -> Prompt:
+    """Return a prompt that asks the LLM to fetch a raw GSRS substance record."""
+    messages = [
+        {
+            "role": "user",
+            "content": TextContent(
+                type="text",
+                text=(
+                    f"Fetch the complete GSRS substance record for identifier `{identifier}` "
+                    "using the `gsrs_get_substance` tool (or the resource "
+                    "`gsrs://substances/{identifier}`). Return the raw JSON document "
+                    "verbatim and identify the substance's UUID, approval ID, substance "
+                    "class, and status. Do not paraphrase or omit fields — the full "
+                    "payload is required for downstream processing."
+                ),
+            ),
+        }
+    ]
+    return Prompt(name="fetch_substance", title="Fetch a GSRS substance record", messages=messages)
+
 
 @mcp.prompt(name="substance_summary", title="Summarize a GSRS substance", description="Prompt template for fetching and summarizing a single GSRS substance record.")
 async def substance_summary_prompt(identifier: str) -> Prompt:
