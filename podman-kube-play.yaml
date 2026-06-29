@@ -149,17 +149,19 @@ spec:
           mkdir -p /data
           cat > /data/Caddyfile <<'EOF'
           {
-              acme_ca {$CADDY_ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
-              email {$CADDY_EMAIL:admin@example.com}
+                  acme_ca {$CADDY_ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
           }
           {$MCP_HOSTNAME:gsrs.example.com} {
-              encode gzip zstd
-              reverse_proxy {$MCP_UPSTREAM:localhost:8000} {
-                  header_up Host {host}
-                  header_up X-Real-IP {remote_host}
-                  header_up X-Forwarded-For {remote_host}
-                  header_up X-Forwarded-Proto {scheme}
-              }
+                  tls {$CADDY_EMAIL:admin@example.com} {
+                          ca_root /etc/ssl/certs/ca-certificates.crt
+                  }
+                  encode gzip zstd
+                  reverse_proxy {$MCP_UPSTREAM:localhost:8000} {
+                          header_up Host {host}
+                          header_up X-Real-IP {remote_host}
+                          header_up X-Forwarded-For {remote_host}
+                          header_up X-Forwarded-Proto {scheme}
+                  }
           }
           EOF
           exec caddy run --config /data/Caddyfile

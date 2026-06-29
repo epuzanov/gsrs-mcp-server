@@ -501,11 +501,17 @@ async def gsrs_get_substance(identifier: str) -> str:
             tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
             return f"GSRS API is currently unavailable: {reason}"
 
-        substance = runtime.gsrs_api.get_substance(identifier)
-        tool.finish("success" if substance else "abstained", result_count=1 if substance else 0, citation_count=0)
-        if substance is None:
-            return f"Substance **{identifier}** not found in GSRS API."
-        return json.dumps(substance, indent=2, default=str)
+        # Delegate to the canonical resource implementation (single source of truth).
+        result = await gsrs_substance_resource(identifier)
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("error"):
+            tool.finish("abstained", result_count=0, citation_count=0)
+        else:
+            tool.finish("success", result_count=1, citation_count=0)
+        return result
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
         return f"GSRS get_substance error: {exc}"
@@ -529,11 +535,13 @@ async def gsrs_get_summary(identifier: str) -> str:
             tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
             return f"GSRS API is currently unavailable: {reason}"
 
-        substance = runtime.gsrs_api.get_substance(identifier)
-        tool.finish("success" if substance else "abstained", result_count=1 if substance else 0, citation_count=0)
-        if substance is None:
-            return f"Substance **{identifier}** not found in GSRS API."
-        return substance_to_markdown(substance)
+        # Delegate to the canonical resource implementation (single source of truth).
+        result = await gsrs_substance_summary_resource(identifier)
+        if result.startswith("GSRS API is currently unavailable") or "not found in GSRS API" in result:
+            tool.finish("abstained", result_count=0, citation_count=0)
+        else:
+            tool.finish("success", result_count=1, citation_count=0)
+        return result
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
         return f"GSRS summary error: {exc}"
@@ -717,8 +725,14 @@ async def gsrs_get_cv_domains(size: int = 200) -> str:
             tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
             return f"GSRS API is currently unavailable: {reason}"
 
-        payload = runtime.gsrs_api.get_cv_domains(size=max(1, min(size, 500)))
-        domains = payload.get("content") or payload.get("results") or []
+        # Delegate to the canonical resource implementation (single source of truth)
+        # and render its JSON payload as the tool's markdown surface.
+        result = await gsrs_cv_domains_resource()
+        payload = json.loads(result)
+        if payload.get("error"):
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=str(payload["error"]))
+            return f"GSRS API is currently unavailable: {payload['error']}"
+        domains = payload.get("domains", [])
         tool.finish("success", result_count=len(domains), citation_count=0)
 
         if not domains:
@@ -768,8 +782,14 @@ async def gsrs_get_cv_terms(domain: str) -> str:
             tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
             return f"GSRS API is currently unavailable: {reason}"
 
-        payload = runtime.gsrs_api.get_cv_terms(domain)
-        terms = payload.get("terms") or []
+        # Delegate to the canonical resource implementation (single source of truth)
+        # and render its JSON payload as the tool's markdown surface.
+        result = await gsrs_cv_domain_terms_resource(domain)
+        payload = json.loads(result)
+        if payload.get("error"):
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=str(payload["error"]))
+            return f"GSRS API is currently unavailable: {payload['error']}"
+        terms = payload.get("terms", [])
         tool.finish("success", result_count=len(terms), citation_count=0)
 
         if not terms:
@@ -918,10 +938,10 @@ async def health() -> str:
     """Return structured runtime health and readiness information."""
     _ensure_runtime_initialized()
     tool = _tool_call("health", query_type="runtime")
-    payload = runtime.get_status_payload()
-    payload["live"] = True
+    # Delegate to the canonical resource implementation (single source of truth).
+    result = await server_health_resource()
     tool.finish("success", result_count=0, citation_count=0)
-    return json.dumps(payload, indent=2, default=str)
+    return result
 
 
 @mcp.tool(
@@ -941,9 +961,14 @@ async def statistics() -> str:
             reason = runtime.vector_backend_unavailable_reason()
             tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
             return f"Statistics are currently unavailable: {reason}"
-        payload = runtime.vector_db.get_statistics()
-        tool.finish("success", result_count=0, citation_count=0)
-        return json.dumps(payload, indent=2, default=str)
+        # Delegate to the canonical resource implementation (single source of truth).
+        result = await server_statistics_resource()
+        payload = json.loads(result)
+        if isinstance(payload, dict) and payload.get("error"):
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=str(payload["error"]))
+        else:
+            tool.finish("success", result_count=0, citation_count=0)
+        return result
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
         return f"Statistics error: {exc}"
