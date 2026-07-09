@@ -448,7 +448,7 @@ async def get_parent_context(chunk_id: str) -> str:
 
         # Get parent context
         enricher = runtime.parent_enricher
-        parent_identity = enricher.get_parent_identity(chunk)
+        parent_identity, fallback_used = enricher.get_parent_identity(chunk)
         parent_context = enricher.reconstruct_parent_context(parent_identity)
 
         if not parent_context:

@@ -132,8 +132,8 @@ spec:
     - name: httpd
       image: docker.io/library/caddy:2
       # The caddy container reads MCP_HOSTNAME, MCP_UPSTREAM,
-      # CADDY_ACME_CA, and CADDY_EMAIL from the ConfigMap at
-      # startup. The Caddyfile below uses Caddy v2's native
+      # ACME_CA, ACME_KEY_ID, ACME_MAC_KEY, and ACME_EMAIL from the
+      # ConfigMap at startup. The Caddyfile below uses Caddy v2's native
       # `{$VAR:default}` substitution syntax as a safety net for
       # the case where one of these vars is unset. Caddy only
       # falls back to the default when the env var is missing
@@ -148,20 +148,18 @@ spec:
         - |
           mkdir -p /data
           cat > /data/Caddyfile <<'EOF'
-          {
-                  acme_ca {$CADDY_ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
-          }
           {$MCP_HOSTNAME:gsrs.example.com} {
-                  tls {$CADDY_EMAIL:admin@example.com} {
-                          ca_root /etc/ssl/certs/ca-certificates.crt
-                  }
-                  encode gzip zstd
-                  reverse_proxy {$MCP_UPSTREAM:localhost:8000} {
-                          header_up Host {host}
-                          header_up X-Real-IP {remote_host}
-                          header_up X-Forwarded-For {remote_host}
-                          header_up X-Forwarded-Proto {scheme}
-                  }
+            tls {$ACME_EMAIL:admin@example.com} {
+              ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+              eab {$ACME_KEY_ID} {$ACME_MAC_KEY}
+            }
+            encode gzip zstd
+            reverse_proxy {$MCP_UPSTREAM:localhost:8000} {
+              header_up Host {host}
+              header_up X-Real-IP {remote_host}
+              header_up X-Forwarded-For {remote_host}
+              header_up X-Forwarded-Proto {scheme}
+            }
           }
           EOF
           exec caddy run --config /data/Caddyfile
@@ -175,9 +173,6 @@ spec:
           mountPath: /data
         - name: caddy-config-cache
           mountPath: /config
-        - name: ca-bundle
-          mountPath: /etc/ssl/certs/ca-certificates.crt
-          subPath: ca-certificates.crt
   volumes:
     - name: postgres-data
       persistentVolumeClaim:
@@ -190,8 +185,4 @@ spec:
         claimName: gsrs-caddy-data
     - name: caddy-config-cache
       emptyDir: {}
-    - name: ca-bundle
-      configMap:
-        name: ca-bundle
-        defaultMode: 420
 
