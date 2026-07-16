@@ -307,8 +307,17 @@ async def rag_query_chunks(
             text = document.text.strip()
             if len(text) > 700:
                 text = text[:700].rstrip() + "..."
+            # Display name lives on the chunk's metadata_json; the
+            # chunker always writes it. Older indexes may not have
+            # the field — fall back to the document UUID so the
+            # label is never empty.
+            display_name = (
+                (document.metadata_json or {}).get("display_name")
+                or str(document.document_id)
+            )
             lines.append(f"{index}. Score: `{result.score:.4f}`")
             lines.append(f"   Substance UUID: `{document.document_id}`")
+            lines.append(f"   Substance Name: `{display_name}`")
             lines.append(f"   Section: `{document.section}`")
             lines.append(f"   Chunk: `{document.chunk_id}`")
             lines.append(f"   Text: {text}")
@@ -405,8 +414,20 @@ async def rag_query(
             if len(text) > 500:
                 text = text[:500].rstrip() + "..."
 
+            # Display name is surfaced on the chunk dict by
+            # ``enrich_chunk_with_parent`` (top-level + metadata).
+            # Prefer the top-level field; fall back to the nested
+            # metadata, then to the document UUID so the label is
+            # never empty.
+            chunk_metadata = chunk.get("metadata") or {}
+            display_name = (
+                chunk.get("display_name")
+                or chunk_metadata.get("display_name")
+                or str(chunk["document_id"])
+            )
             lines.append(f"{index}. Score: `{score:.4f}` | Section: `{chunk['section']}`")
             lines.append(f"   Substance UUID: `{chunk['document_id']}`")
+            lines.append(f"   Substance Name: `{display_name}`")
             lines.append(f"   Chunk: `{chunk['chunk_id']}`")
             lines.append(f"   Text: {text}")
 

@@ -794,5 +794,145 @@ class TestBackendSectionFilterAndExclusion(unittest.TestCase):
         self.assertNotIn("atomic 0", second_summary)
 
 
+class TestDisplayNameSurfacing(unittest.TestCase):
+    """The display name is written on every chunk's ``metadata_json``
+    by the chunker. These tests pin down where the enricher surfaces
+    it so consumers don't have to dig into the nested metadata dict.
+    """
+
+    def setUp(self) -> None:
+        from app.models import DBQueryResult
+        from app.services.parent_child_retrieval import (
+            ParentContextEnricher,
+            ParentIdentity,
+        )
+
+        self.doc_id = uuid4()
+        self.identity = ParentIdentity(
+            document_id=self.doc_id, root_section="names"
+        )
+
+        # Two child chunks from the same parent (same document, same
+        # root_section) with the same display name on each. The
+        # enrichment path should surface the name on both the
+        # per-child ``chunk`` payload and on the parent context.
+        self.chunk_a = VectorDocument(
+            chunk_id="names_a",
+            document_id=self.doc_id,
+            section="names",
+            root_section="names",
+            text="Name: Aspirin",
+            embedding=[0.1] * 4,
+            metadata_json={
+                "root_section": "names",
+                "chunk_type": "name",
+                "name": "Aspirin",
+                "name_type": "of",
+                "display_name": "ASPIRIN",
+            },
+        )
+        self.chunk_b = VectorDocument(
+            chunk_id="names_b",
+            document_id=self.doc_id,
+            section="names",
+            root_section="names",
+            text="Name: Acetylsalicylic acid",
+            embedding=[0.1] * 4,
+            metadata_json={
+                "root_section": "names",
+                "chunk_type": "name",
+                "name": "Acetylsalicylic acid",
+                "name_type": "sys",
+                "display_name": "ASPIRIN",
+            },
+        )
+        self.results = [
+            DBQueryResult(document=self.chunk_a, score=0.95),
+            DBQueryResult(document=self.chunk_b, score=0.85),
+        ]
+
+    def _build_enricher(self) -> "ParentContextEnricher":
+        from unittest.mock import MagicMock
+        from app.services.parent_child_retrieval import ParentContextEnricher
+
+        # Vector DB returns both chunks for the same parent.
+        mock_db = MagicMock()
+        mock_db.get_documents.return_value = [self.chunk_a, self.chunk_b]
+        return ParentContextEnricher(mock_db)
+
+    def test_enriched_chunk_carries_top_level_display_name(self) -> None:
+        enricher = self._build_enricher()
+        enriched = enricher.enrich_search_results(self.results)
+
+        # Both children surface the display name at the top of the
+        # ``chunk`` payload — no need to dig into metadata.
+        self.assertEqual(enriched[0]["chunk"]["display_name"], "ASPIRIN")
+        self.assertEqual(enriched[1]["chunk"]["display_name"], "ASPIRIN")
+
+    def test_enriched_carries_top_level_display_name(self) -> None:
+        """The top-level ``display_name`` is the parent's display
+        name (the value shared across chunks of the same substance),
+        not the per-child name."""
+        enricher = self._build_enricher()
+        enriched = enricher.enrich_search_results(self.results)
+        for entry in enriched:
+            self.assertEqual(entry["display_name"], "ASPIRIN")
+
+    def test_parent_context_carries_top_level_display_name(self) -> None:
+        """The parent context dict exposes the display name directly
+        (not just inside ``metadata_unified``)."""
+        enricher = self._build_enricher()
+        enriched = enricher.enrich_search_results(self.results)
+        for entry in enriched:
+            self.assertEqual(
+                entry["parent_context"]["display_name"], "ASPIRIN"
+            )
+
+    def test_reconstruct_parent_context_exposes_display_name(self) -> None:
+        """``reconstruct_parent_context`` (the canonical parent-context
+        API) puts ``display_name`` on the returned dict as well as in
+        ``metadata_unified``."""
+        enricher = self._build_enricher()
+        context = enricher.reconstruct_parent_context(self.identity)
+        self.assertIsNotNone(context)
+        self.assertEqual(context["display_name"], "ASPIRIN")
+        # And the merged metadata still carries it (backwards compat).
+        self.assertEqual(
+            context["metadata_unified"]["display_name"], "ASPIRIN"
+        )
+
+    def test_missing_display_name_falls_back_to_document_id(self) -> None:
+        """Legacy chunks without ``display_name`` fall back to the
+        document UUID so the top-level field is never empty."""
+        from app.models import DBQueryResult
+
+        legacy_chunk = VectorDocument(
+            chunk_id="legacy_names",
+            document_id=self.doc_id,
+            section="names",
+            root_section="names",
+            text="Name: Legacy",
+            embedding=[0.1] * 4,
+            metadata_json={"root_section": "names", "chunk_type": "name"},
+        )
+        from unittest.mock import MagicMock
+        from app.services.parent_child_retrieval import ParentContextEnricher
+
+        mock_db = MagicMock()
+        mock_db.get_documents.return_value = [legacy_chunk]
+        enricher = ParentContextEnricher(mock_db)
+
+        enriched = enricher.enrich_search_results(
+            [DBQueryResult(document=legacy_chunk, score=0.5)]
+        )
+        # Top-level falls back to the UUID so the field is always set.
+        self.assertEqual(enriched[0]["chunk"]["display_name"], str(self.doc_id))
+        self.assertEqual(enriched[0]["display_name"], str(self.doc_id))
+        # And the parent context follows the same fallback rule.
+        self.assertEqual(
+            enriched[0]["parent_context"]["display_name"], str(self.doc_id)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

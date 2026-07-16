@@ -369,6 +369,157 @@ class TestSummarizeParentSections(unittest.TestCase):
         self.assertIn("Name: Aspirin", md)
 
 
+class TestSummarizeParentDisplayNameColumn(unittest.TestCase):
+    """Opt-in ``Substance`` column on every rendered table.
+
+    Default is OFF (preserves the prior table shape — the H1 header
+    already carries the display name). When the caller opts in via
+    ``include_display_name_column=True``, every table gets a leading
+    ``Substance`` column populated from each chunk's
+    ``metadata_json.display_name``.
+    """
+
+    def setUp(self) -> None:
+        self.mock_db = MagicMock()
+        self.enricher = ParentContextEnricher(self.mock_db)
+        self.doc_id = uuid4()
+
+    def test_default_omits_substance_column(self) -> None:
+        chunk = _chunk(
+            document_id=self.doc_id,
+            section="names",
+            text="Name: Aspirin",
+            metadata={
+                "chunk_type": "name",
+                "name": "Aspirin",
+                "name_type": "of",
+                "name_orgs": [],
+                "access": [],
+                "display_name": "ASPIRIN",
+            },
+        )
+        self.mock_db.get_documents.return_value = [chunk]
+        identity = ParentIdentity(document_id=self.doc_id, root_section="names")
+        md = self.enricher.summarize_parent(identity, include_text_parts=False)
+        # Default: no Substance column (H1 header carries the
+        # display name instead).
+        self.assertNotIn("| Substance |", md)
+
+    def test_opt_in_prepends_substance_column(self) -> None:
+        chunk = _chunk(
+            document_id=self.doc_id,
+            section="names",
+            text="Name: Aspirin",
+            metadata={
+                "chunk_type": "name",
+                "name": "Aspirin",
+                "name_type": "of",
+                "name_orgs": [],
+                "access": [],
+                "display_name": "ASPIRIN",
+            },
+        )
+        self.mock_db.get_documents.return_value = [chunk]
+        identity = ParentIdentity(document_id=self.doc_id, root_section="names")
+        md = self.enricher.summarize_parent(
+            identity,
+            include_text_parts=False,
+            include_display_name_column=True,
+        )
+        # ``Substance`` is the first column header.
+        self.assertIn("| Substance |", md)
+        # The display name is in the row.
+        self.assertIn("ASPIRIN", md)
+        # The header ordering: Substance comes first, then the
+        # existing name columns.
+        header_line = next(
+            line for line in md.splitlines()
+            if line.startswith("| Substance |")
+        )
+        self.assertTrue(
+            header_line.startswith("| Substance | Name | Name Type |"),
+            f"Substance should be the first column, got: {header_line}",
+        )
+
+    def test_substance_column_carries_display_name_per_row(self) -> None:
+        """Each row's Substance cell comes from the row's own
+        ``metadata_json.display_name``. Real GSRS payloads write the
+        same display name on every chunk of a substance, so the
+        column is typically redundant across rows within a single
+        parent — but the per-row lookup keeps the renderer correct
+        when it isn't."""
+        chunks = [
+            _chunk(
+                document_id=self.doc_id,
+                section="names",
+                text="Name: Aspirin",
+                metadata={
+                    "chunk_type": "name",
+                    "name": "Aspirin",
+                    "name_type": "of",
+                    "name_orgs": [],
+                    "access": [],
+                    "display_name": "ASPIRIN",
+                },
+            ),
+            _chunk(
+                document_id=self.doc_id,
+                section="names",
+                text="Name: Acetylsalicylic acid",
+                metadata={
+                    "chunk_type": "name",
+                    "name": "Acetylsalicylic acid",
+                    "name_type": "sys",
+                    "name_orgs": [],
+                    "access": [],
+                    "display_name": "ASPIRIN",
+                },
+            ),
+        ]
+        self.mock_db.get_documents.return_value = chunks
+        identity = ParentIdentity(document_id=self.doc_id, root_section="names")
+        md = self.enricher.summarize_parent(
+            identity,
+            include_text_parts=False,
+            include_display_name_column=True,
+        )
+        # Two data rows, each carrying the display name in the
+        # first column. Count ``ASPIRIN`` occurrences in the row area
+        # (excluding the H1 header which already says ``ASPIRIN`` once).
+        row_lines = [
+            line for line in md.splitlines()
+            if line.startswith("| ASPIRIN |")
+        ]
+        self.assertEqual(len(row_lines), 2)
+
+    def test_substance_column_missing_field_renders_empty(self) -> None:
+        """Chunks without ``display_name`` render an empty Substance
+        cell (the renderer doesn't substitute the document UUID —
+        that's a fallback that only kicks in on the structured
+        summary paths, not the per-row table)."""
+        chunk = _chunk(
+            document_id=self.doc_id,
+            section="names",
+            text="Name: Anonymous",
+            metadata={
+                "chunk_type": "name",
+                "name": "Anonymous",
+                "name_type": "of",
+                "name_orgs": [],
+                "access": [],
+            },
+        )
+        self.mock_db.get_documents.return_value = [chunk]
+        identity = ParentIdentity(document_id=self.doc_id, root_section="names")
+        md = self.enricher.summarize_parent(
+            identity,
+            include_text_parts=False,
+            include_display_name_column=True,
+        )
+        # The Substance cell is empty (``|  |`` with one space).
+        self.assertIn("|  |", md)
+
+
 class TestSummarizeParentLimits(unittest.TestCase):
     """Size / cap behaviour."""
 

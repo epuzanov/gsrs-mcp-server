@@ -325,8 +325,24 @@ class ParentContextEnricher:
             "metadata_unified": {},
         }
 
+        # Track the first display name we encounter so callers can
+        # read ``parent_context["display_name"]`` without walking
+        # the ``metadata_unified`` chain. The chunker writes the
+        # same display name on every chunk of a substance, so the
+        # first non-empty value is authoritative. Older indexes
+        # may not have the field — we leave ``display_name`` off
+        # the dict in that case so callers can distinguish "no
+        # display name" from "the document UUID as a fallback".
+        merged_display_name: Optional[str] = None
+
         # Aggregate text from all parent chunks
         for chunk in parent_chunks:
+            # Capture the first display name we see, so the parent
+            # context can expose it at the top level.
+            if merged_display_name is None:
+                name = (chunk.metadata_json or {}).get("display_name")
+                if isinstance(name, str) and name:
+                    merged_display_name = name
             if chunk.text:
                 original_len = len(chunk.text)
                 truncated_text = (
@@ -365,6 +381,12 @@ class ParentContextEnricher:
                     if key not in parent_context["metadata_unified"]:
                         parent_context["metadata_unified"][key] = value
 
+        # Promote the display name one level up so callers can read
+        # ``parent_context["display_name"]`` directly. ``metadata_unified``
+        # still carries the merged value for backwards compatibility.
+        if merged_display_name is not None:
+            parent_context["display_name"] = merged_display_name
+
         return parent_context
 
     def enrich_chunk_with_parent(
@@ -398,6 +420,18 @@ class ParentContextEnricher:
                 "text": chunk.text,
                 "source_url": chunk.source_url,
                 "metadata": chunk.metadata_json or {},
+                # Promote the display name to the top of the chunk
+                # payload so callers don't have to dig into the
+                # nested ``metadata`` dict. The chunker always writes
+                # ``display_name`` on every chunk's ``metadata_json``
+                # (see ``SubstanceChunker._make_chunk``), so this is
+                # available for every newly indexed substance. Older
+                # indexes may not have it; the ``or`` falls back to
+                # the document UUID so the field is never empty.
+                "display_name": (
+                    (chunk.metadata_json or {}).get("display_name")
+                    or str(chunk.document_id)
+                ),
             },
         }
 
@@ -419,6 +453,22 @@ class ParentContextEnricher:
             if fallback_used:
                 enriched["parent_grouping_fallback_used"] = True
                 enriched["parent_context"]["parent_grouping_fallback_used"] = True
+
+            # Top-level display name for the parent. ``reconstruct_parent_context``
+            # already merges ``display_name`` into ``metadata_unified`` (from the
+            # first chunk that carries it); surface the same value one level
+            # up so consumers can read ``enriched["display_name"]`` without
+            # walking the ``parent_context.metadata_unified`` chain. The chunk's
+            # own display name is the authoritative source, so we prefer that
+            # when present (it always is for newly indexed data) and only
+            # fall back to the merged metadata otherwise.
+            parent_display = (
+                (chunk.metadata_json or {}).get("display_name")
+                or (parent_context.get("metadata_unified") or {}).get("display_name")
+                or str(chunk.document_id)
+            )
+            enriched["display_name"] = parent_display
+            enriched["parent_context"]["display_name"] = parent_display
 
             if include_parent_text and parent_context.get("text_parts"):
                 # Aggregate parent text, respecting the parts and char limits.
@@ -635,6 +685,7 @@ class ParentContextEnricher:
         max_chars: int = _DEFAULT_PARENT_SUMMARY_MAX_CHARS,
         exclude_chunk_ids: Optional[Set[str]] = None,
         include_text_parts: bool = True,
+        include_display_name_column: bool = False,
     ) -> str:
         """Render a parent context as a chunk-driven markdown summary.
 
@@ -661,6 +712,11 @@ class ParentContextEnricher:
             include_text_parts: When True, include the raw chunk text
                 for each rendered row. When False, only the structured
                 metadata fields are rendered.
+            include_display_name_column: When True, prepend a
+                ``Substance`` column to every rendered table so the
+                substance's display name is visible on every row.
+                Default False to preserve the prior table shape; the
+                H1 header already carries the display name.
 
         Returns:
             A markdown string. Empty string when the parent has no
@@ -791,6 +847,7 @@ class ParentContextEnricher:
             rendered = _render_rows_as_table(
                 rows,
                 include_text_parts=include_text_parts,
+                include_display_name_column=include_display_name_column,
                 limit=_DEFAULT_PARENT_SUMMARY_BUCKET_LIMIT,
             )
             if rendered:
@@ -826,6 +883,7 @@ class ParentContextEnricher:
                 rendered = _render_rows_as_table(
                     rows,
                     include_text_parts=include_text_parts,
+                    include_display_name_column=include_display_name_column,
                     limit=_DEFAULT_PARENT_SUMMARY_BUCKET_LIMIT,
                 )
                 if rendered:
@@ -847,6 +905,7 @@ class ParentContextEnricher:
                 rendered = _render_rows_as_table(
                     rows,
                     include_text_parts=include_text_parts,
+                    include_display_name_column=include_display_name_column,
                     limit=_DEFAULT_PARENT_SUMMARY_BUCKET_LIMIT,
                 )
                 if rendered:
@@ -980,6 +1039,7 @@ def _render_rows_as_table(
     *,
     include_text_parts: bool,
     limit: int,
+    include_display_name_column: bool = False,
 ) -> List[str]:
     """Render a list of parent-context text-parts as a markdown table.
 
@@ -988,17 +1048,33 @@ def _render_rows_as_table(
     caller is expected to surface the count elsewhere if it matters.
     Empty inputs return an empty list — callers should skip emitting
     a section header in that case.
+
+    When ``include_display_name_column`` is True, a leading
+    ``Substance`` column is prepended to every table so the
+    substance's display name is visible on every row. The chunker
+    writes ``display_name`` on every chunk's ``metadata_json``; the
+    column is populated from there. Rows that lack the field render
+    an empty cell.
     """
     if not rows:
         return []
     rows = rows[:limit]
     chunk_type = rows[0].get("chunk_type") or "other"
     columns = list(_TABLE_COLUMNS.get(chunk_type, ()))
+    if include_display_name_column:
+        # ``Substance`` is a fixed leading column; everything else
+        # shifts right. ``text`` (when emitted) stays last.
+        columns = ["display_name"] + columns
     if include_text_parts:
         columns.append("text")
 
     md: List[str] = []
-    headers = [col.replace("_", " ").title() for col in columns]
+    headers: List[str] = []
+    for col in columns:
+        if col == "display_name":
+            headers.append("Substance")
+        else:
+            headers.append(col.replace("_", " ").title())
     md.append("| " + " | ".join(headers) + " |")
     md.append("|" + "|".join("---" for _ in columns) + "|")
     for row in rows:
@@ -1006,6 +1082,16 @@ def _render_rows_as_table(
         for col in columns:
             if col == "text":
                 value = row.get("text") or ""
+            elif col == "display_name":
+                # Prefer the per-row metadata; fall back to the
+                # part-level ``display_name`` set by the enricher
+                # so older callers that don't carry the per-chunk
+                # metadata still surface a name.
+                value = (
+                    _metadata_lookup(row).get("display_name")
+                    or row.get("display_name")
+                    or ""
+                )
             else:
                 value = _row_value(row, col)
             cells.append(_escape_cell(value))
