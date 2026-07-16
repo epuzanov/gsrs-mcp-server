@@ -1453,8 +1453,8 @@ class SubstanceChunker:
         Routing rules:
 
         * ``ACTIVE MOIETY`` / ``SUBSTANCE PART`` → ``activemoiety``
-        * ``METABOLITE INACTIVE->PARENT`` → ``metabolites``
-        * ``IMPURITY->PARENT`` → ``impurities``
+        * type contains ``METABOLITE`` → ``metabolites``
+        * type contains ``IMPURITY`` → ``impurities``
         * type contains ``CONSTITUENT`` → ``constituents``
         * ``SALT/SOLVATE->PARENT`` → ``salts``
         * any other type → ``relationships`` (the root section)
@@ -1513,8 +1513,8 @@ class SubstanceChunker:
         Routing rules:
 
         * ``ACTIVE MOIETY`` / ``SUBSTANCE PART`` → ``activemoiety``
-        * ``METABOLITE INACTIVE->PARENT`` → ``metabolites``
-        * ``IMPURITY->PARENT`` → ``impurities``
+        * type contains ``METABOLITE`` → ``metabolites``
+        * type contains ``IMPURITY`` → ``impurities``
         * type contains ``CONSTITUENT`` → ``constituents``
         * ``SALT/SOLVATE->PARENT`` → ``salts``
         * any other / missing type → ``relationships`` (the root)
@@ -1524,9 +1524,9 @@ class SubstanceChunker:
         normalized = str(rel_type).strip().upper()
         if normalized in ("ACTIVE MOIETY", "SUBSTANCE PART"):
             return "activemoiety"
-        if normalized == "METABOLITE INACTIVE->PARENT":
+        if "METABOLITE" in normalized:
             return "metabolites"
-        if normalized == "IMPURITY->PARENT":
+        if "IMPURITY" in normalized:
             return "impurities"
         if "CONSTITUENT" in normalized:
             return "constituents"

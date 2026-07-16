@@ -179,8 +179,8 @@ def _section_for_relationship_type(rel_type: str) -> str:
     Routing rules (must stay in sync with the chunker):
 
     * ``ACTIVE MOIETY`` / ``SUBSTANCE PART`` → ``active_moieties``
-    * ``METABOLITE INACTIVE->PARENT`` → ``metabolites``
-    * ``IMPURITY->PARENT`` → ``impurities``
+    * type contains ``METABOLITE`` → ``metabolites``
+    * type contains ``IMPURITY`` → ``impurities``
     * type contains ``CONSTITUENT`` → ``constituents``
     * ``SALT/SOLVATE->PARENT`` → ``salts_or_solvates``
     * any other / missing type → ``other`` (the root bucket)
@@ -190,9 +190,9 @@ def _section_for_relationship_type(rel_type: str) -> str:
     normalized = str(rel_type).strip().upper()
     if normalized in ("ACTIVE MOIETY", "SUBSTANCE PART"):
         return "active_moieties"
-    if normalized == "METABOLITE INACTIVE->PARENT":
+    if "METABOLITE" in normalized:
         return "metabolites"
-    if normalized == "IMPURITY->PARENT":
+    if "IMPURITY" in normalized:
         return "impurities"
     if "CONSTITUENT" in normalized:
         return "constituents"
@@ -224,8 +224,8 @@ def _format_relationships(relationships: list[Any]) -> list[str]:
     relationship picture in a structured form:
 
     * **Active Moieties** — ``ACTIVE MOIETY`` / ``SUBSTANCE PART``
-    * **Metabolites** — ``METABOLITE INACTIVE->PARENT``
-    * **Impurities** — ``IMPURITY->PARENT``
+    * **Metabolites** — types containing ``METABOLITE``
+    * **Impurities** — types containing ``IMPURITY``
     * **Constituents** — types containing ``CONSTITUENT``
     * **Salts or Solvates** — ``SALT/SOLVATE->PARENT``
     * **Other Relationships** — any other type

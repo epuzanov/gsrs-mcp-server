@@ -41,6 +41,7 @@ class TestCompactToolContract(unittest.TestCase):
     ]
 
     EXPECTED_PROMPTS = {
+        "fetch_substance",
         "substance_summary",
         "resolve_cv_terms",
         "rag_reasoning",
@@ -125,8 +126,11 @@ class TestCompactToolContract(unittest.TestCase):
                         break
         self.assertEqual(destructive_tools, set())
 
-    def test_ingest_is_marked_non_readonly_and_non_idempotent(self):
-        """rag_ingest writes to the vector store and is not idempotent."""
+    def test_ingest_is_marked_non_readonly_and_idempotent(self):
+        """rag_ingest writes to the vector store and overwrites prior
+        chunks for the same substance UUID, so it is destructive. It
+        is idempotent in the sense that re-ingesting the same JSON
+        payload produces the same chunks."""
         for name, decorator in self._tool_decorators():
             if name == "rag_ingest":
                 annotations = None
@@ -138,7 +142,11 @@ class TestCompactToolContract(unittest.TestCase):
                 self.assertIn("ToolAnnotations", ast.unparse(annotations))
                 source = ast.unparse(annotations)
                 self.assertIn("readOnlyHint=False", source)
-                self.assertIn("destructiveHint=False", source)
+                # Ingest is destructive: re-ingesting a substance UUID
+                # overwrites the prior chunks for that document.
+                self.assertIn("destructiveHint=True", source)
+                # Ingest is idempotent: re-ingesting the same JSON
+                # payload produces the same chunks.
                 self.assertIn("idempotentHint=True", source)
                 break
         else:

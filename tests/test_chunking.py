@@ -1969,8 +1969,8 @@ class TestPerItemChunking(unittest.TestCase):
         Routing:
 
         * ``ACTIVE MOIETY`` / ``SUBSTANCE PART`` → ``activemoiety``
-        * ``METABOLITE INACTIVE->PARENT`` → ``metabolites``
-        * ``IMPURITY->PARENT`` → ``impurities``
+        * type contains ``METABOLITE`` → ``metabolites``
+        * type contains ``IMPURITY`` → ``impurities``
         * type contains ``CONSTITUENT`` → ``constituents``
         * ``SALT/SOLVATE->PARENT`` → ``salts``
         * any other type → ``relationships`` (the root)
