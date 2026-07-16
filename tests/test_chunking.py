@@ -5,6 +5,7 @@ Tests for the native ChunkerService using gsrs.model library's
 Substance.to_embedding_chunks() method.
 """
 import unittest
+from typing import Dict, List
 
 from app.models import VectorDocument
 from app.services.chunker import (
@@ -1937,7 +1938,7 @@ class TestPerItemChunking(unittest.TestCase):
                     },
                 },
                 {
-                    "type": "ACTIVE MOIETY",
+                    "type": "PARENT->CHILD",
                     "relatedSubstance": {
                         "refPname": "PARENT",
                         "refuuid": "parent-uuid",
@@ -1959,6 +1960,122 @@ class TestPerItemChunking(unittest.TestCase):
             "relationship_group",
             {c.metadata_json.get("chunk_type") for c in rel_chunks},
         )
+
+    def test_relationship_sub_sections_by_type(self):
+        """Relationships are routed to typed sub-sections under the
+        ``relationships`` root, mirroring the identifiers /
+        classifications split used for codes.
+
+        Routing:
+
+        * ``ACTIVE MOIETY`` / ``SUBSTANCE PART`` → ``activemoiety``
+        * ``METABOLITE INACTIVE->PARENT`` → ``metabolites``
+        * ``IMPURITY->PARENT`` → ``impurities``
+        * type contains ``CONSTITUENT`` → ``constituents``
+        * ``SALT/SOLVATE->PARENT`` → ``salts``
+        * any other type → ``relationships`` (the root)
+        """
+        substance = {
+            "uuid": "eeeeeeee-1111-2222-3333-aaaaaaaaaaaa",
+            "substanceClass": "chemical",
+            "names": [{"name": "Mixed Rels", "displayName": True}],
+            "status": "approved",
+            "relationships": [
+                {
+                    "type": "ACTIVE MOIETY",
+                    "relatedSubstance": {
+                        "refPname": "PARENT-1",
+                        "refuuid": "p-1-uuid",
+                    },
+                },
+                {
+                    "type": "SUBSTANCE PART",
+                    "relatedSubstance": {
+                        "refPname": "PART-1",
+                        "refuuid": "p-2-uuid",
+                    },
+                },
+                {
+                    "type": "METABOLITE INACTIVE->PARENT",
+                    "relatedSubstance": {
+                        "refPname": "MET-1",
+                        "refuuid": "p-3-uuid",
+                    },
+                },
+                {
+                    "type": "IMPURITY->PARENT",
+                    "relatedSubstance": {
+                        "refPname": "IMP-1",
+                        "refuuid": "p-4-uuid",
+                    },
+                },
+                {
+                    "type": "CONSTITUENT ALWAYS->SUBSTANCE",
+                    "relatedSubstance": {
+                        "refPname": "CON-1",
+                        "refuuid": "p-5-uuid",
+                    },
+                },
+                {
+                    "type": "SALT/SOLVATE->PARENT",
+                    "relatedSubstance": {
+                        "refPname": "SALT-1",
+                        "refuuid": "p-6-uuid",
+                    },
+                },
+                {
+                    "type": "BINDER->LIGAND",
+                    "relatedSubstance": {
+                        "refPname": "OTHER",
+                        "refuuid": "p-7-uuid",
+                    },
+                },
+            ],
+        }
+        chunks = self._chunker.chunk(substance)
+        by_section: Dict[str, List[VectorDocument]] = {}
+        for c in chunks:
+            by_section.setdefault(c.section, []).append(c)
+
+        # Two entries route to activemoiety (ACTIVE MOIETY + SUBSTANCE PART).
+        self.assertEqual(len(by_section.get("activemoiety", [])), 2)
+        self.assertEqual(len(by_section.get("metabolites", [])), 1)
+        self.assertEqual(len(by_section.get("impurities", [])), 1)
+        self.assertEqual(len(by_section.get("constituents", [])), 1)
+        self.assertEqual(len(by_section.get("salts", [])), 1)
+        # Untyped / unmatched types fall through to the root section.
+        self.assertEqual(len(by_section.get("relationships", [])), 1)
+
+        # All sub-section chunks share the same root_section parent.
+        for section in (
+            "activemoiety",
+            "metabolites",
+            "impurities",
+            "constituents",
+            "salts",
+        ):
+            for c in by_section[section]:
+                self.assertEqual(c.root_section, "relationships")
+                self.assertIn(
+                    c.metadata_json.get("hierarchy", {}).get("parent_section"),
+                    {"relationships"},
+                )
+
+    def test_relationship_sub_sections_resolve_to_root(self):
+        """``sections_in_root("relationships")`` should include every
+        new sub-section so the parent-child enricher can fan out the
+        full relationships parent in one backend query.
+        """
+        members = set(sections_in_root("relationships"))
+        for sub in (
+            "relationships",
+            "activemoiety",
+            "metabolites",
+            "impurities",
+            "constituents",
+            "salts",
+        ):
+            self.assertIn(sub, members)
 
     def test_no_batch_chunk_types_are_emitted(self):
         """No ``*_batch`` or ``reference_index`` chunk types anywhere

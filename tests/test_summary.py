@@ -154,3 +154,99 @@ class TestSubstanceSummary(unittest.TestCase):
         self.assertIn("## Moieties", md)
         self.assertIn("C10H10O2", md)
         self.assertIn("ACHIRAL", md)
+
+    def test_relationships_section_renders_typed_sub_sections(self):
+        """Relationships are split into typed sub-sections (Active
+        Moieties / Metabolites / Impurities / Constituents / Salts or
+        Solvates / Other) — mirroring the Identifiers / Classifications
+        split used for codes.
+        """
+        payload = {
+            "_name": "Sample",
+            "substanceClass": "chemical",
+            "status": "approved",
+            "structure": {},
+            "names": [{"name": "Sample", "displayName": True}],
+            "relationships": [
+                {
+                    "type": "ACTIVE MOIETY",
+                    "relatedSubstance": {"refPname": "PARENT-1"},
+                },
+                {
+                    "type": "SUBSTANCE PART",
+                    "relatedSubstance": {"refPname": "PART-1"},
+                },
+                {
+                    "type": "METABOLITE INACTIVE->PARENT",
+                    "relatedSubstance": {"refPname": "MET-1"},
+                },
+                {
+                    "type": "IMPURITY->PARENT",
+                    "relatedSubstance": {"refPname": "IMP-1"},
+                },
+                {
+                    "type": "CONSTITUENT ALWAYS->SUBSTANCE",
+                    "relatedSubstance": {"refPname": "CON-1"},
+                },
+                {
+                    "type": "SALT/SOLVATE->PARENT",
+                    "relatedSubstance": {"refPname": "SALT-1"},
+                },
+                {
+                    "type": "BINDER->LIGAND",
+                    "relatedSubstance": {"refPname": "OTHER-1"},
+                },
+            ],
+        }
+        md = substance_to_markdown(payload)
+        # Top-level Relationships header is always present.
+        self.assertIn("## Relationships", md)
+        # Each non-empty typed sub-section is rendered with its own
+        # title and table header.
+        for title in (
+            "### Active Moieties",
+            "### Metabolites",
+            "### Impurities",
+            "### Constituents",
+            "### Salts or Solvates",
+            "### Other Relationships",
+        ):
+            self.assertIn(title, md)
+        # All five typed sub-sections share the same table shape as
+        # the existing Identifiers / Classifications tables.
+        self.assertIn(
+            "| Type | Related Substance | Qualification | Access |",
+            md,
+        )
+        # Each related substance name shows up in the rendered table.
+        for name in ("PARENT-1", "PART-1", "MET-1", "IMP-1", "CON-1", "SALT-1", "OTHER-1"):
+            self.assertIn(name, md)
+
+    def test_relationships_sub_sections_are_omitted_when_empty(self):
+        """Sub-section tables only render when they have rows. A
+        substance that only carries, say, an ``ACTIVE MOIETY``
+        relationship should not show a Metabolites sub-section.
+        """
+        payload = {
+            "_name": "Sparse",
+            "substanceClass": "chemical",
+            "status": "approved",
+            "structure": {},
+            "names": [{"name": "Sparse", "displayName": True}],
+            "relationships": [
+                {
+                    "type": "ACTIVE MOIETY",
+                    "relatedSubstance": {"refPname": "P"},
+                },
+            ],
+        }
+        md = substance_to_markdown(payload)
+        self.assertIn("### Active Moieties", md)
+        for absent_title in (
+            "### Metabolites",
+            "### Impurities",
+            "### Constituents",
+            "### Salts or Solvates",
+            "### Other Relationships",
+        ):
+            self.assertNotIn(absent_title, md)

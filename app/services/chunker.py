@@ -54,6 +54,17 @@ _SECTION_TO_ROOT: Dict[str, str] = {
     # universe in one query.
     "identifiers": "codes",
     "classifications": "codes",
+    # Sub-sections of ``relationships`` (root_section = "relationships").
+    # Relationships are routed into typed sub-sections by their
+    # ``type`` value so retrieval can scope a query to a single
+    # relationship kind (e.g. "what are the active moieties?") while
+    # still being able to fan out to the full relationships parent
+    # in one query when needed.
+    "activemoiety": "relationships",
+    "metabolites": "relationships",
+    "impurities": "relationships",
+    "constituents": "relationships",
+    "salts": "relationships",
 }
 
 _TOP_LEVEL_SECTIONS = frozenset(
@@ -1428,9 +1439,25 @@ class SubstanceChunker:
     def _build_relationship_chunks(self, substance: Dict[str, Any]) -> List[VectorDocument]:
         """Build relationship chunks.
 
-        Emits one ``relationship`` chunk per entry — no batch
-        summary chunk and no list shrinking — so every relationship
-        is independently queryable.
+        Each entry in ``substance.relationships`` is emitted as its own
+        chunk — no batch summary chunk and no list shrinking — so every
+        relationship is independently queryable.
+
+        The chunk ``section`` is selected from the entry's ``type`` field
+        so retrieval can scope a query to a single relationship kind
+        (e.g. "what are the active moieties?") while still being able
+        to fan out to the full relationships parent in one query when
+        needed. All sub-sections are mapped to the ``relationships``
+        root via ``_SECTION_TO_ROOT``.
+
+        Routing rules:
+
+        * ``ACTIVE MOIETY`` / ``SUBSTANCE PART`` → ``activemoiety``
+        * ``METABOLITE INACTIVE->PARENT`` → ``metabolites``
+        * ``IMPURITY->PARENT`` → ``impurities``
+        * type contains ``CONSTITUENT`` → ``constituents``
+        * ``SALT/SOLVATE->PARENT`` → ``salts``
+        * any other type → ``relationships`` (the root section)
         """
         chunks: List[VectorDocument] = []
         relationships = substance.get("relationships") or []
@@ -1453,6 +1480,8 @@ class SubstanceChunker:
             qualification = entry.get("qualification", "")
             interaction_type = entry.get("interactionType", "")
 
+            section = self._section_for_relationship_type(rel_type)
+
             text_parts = [
                 f"Relationship: {rel_type}",
                 f"Related Substance: {related_name}",
@@ -1464,7 +1493,7 @@ class SubstanceChunker:
             chunks.append(
                 self._make_chunk(
                     substance,
-                    section="relationships",
+                    section=section,
                     text="\n".join(text_parts),
                     chunk_id_suffix=f"item_{idx}",
                     metadata={
@@ -1476,6 +1505,34 @@ class SubstanceChunker:
             )
 
         return chunks
+
+    @staticmethod
+    def _section_for_relationship_type(rel_type: str) -> str:
+        """Return the chunk ``section`` for a given relationship ``type``.
+
+        Routing rules:
+
+        * ``ACTIVE MOIETY`` / ``SUBSTANCE PART`` → ``activemoiety``
+        * ``METABOLITE INACTIVE->PARENT`` → ``metabolites``
+        * ``IMPURITY->PARENT`` → ``impurities``
+        * type contains ``CONSTITUENT`` → ``constituents``
+        * ``SALT/SOLVATE->PARENT`` → ``salts``
+        * any other / missing type → ``relationships`` (the root)
+        """
+        if not rel_type:
+            return "relationships"
+        normalized = str(rel_type).strip().upper()
+        if normalized in ("ACTIVE MOIETY", "SUBSTANCE PART"):
+            return "activemoiety"
+        if normalized == "METABOLITE INACTIVE->PARENT":
+            return "metabolites"
+        if normalized == "IMPURITY->PARENT":
+            return "impurities"
+        if "CONSTITUENT" in normalized:
+            return "constituents"
+        if normalized == "SALT/SOLVATE->PARENT":
+            return "salts"
+        return "relationships"
 
     @staticmethod
     def _format_property_value(value: Any) -> str:

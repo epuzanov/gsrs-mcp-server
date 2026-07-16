@@ -173,24 +173,104 @@ def _format_codes(codes: list[Any]) -> list[str]:
     return md
 
 
+def _section_for_relationship_type(rel_type: str) -> str:
+    """Return the sub-section key for a given relationship ``type``.
+
+    Routing rules (must stay in sync with the chunker):
+
+    * ``ACTIVE MOIETY`` / ``SUBSTANCE PART`` → ``active_moieties``
+    * ``METABOLITE INACTIVE->PARENT`` → ``metabolites``
+    * ``IMPURITY->PARENT`` → ``impurities``
+    * type contains ``CONSTITUENT`` → ``constituents``
+    * ``SALT/SOLVATE->PARENT`` → ``salts_or_solvates``
+    * any other / missing type → ``other`` (the root bucket)
+    """
+    if not rel_type:
+        return "other"
+    normalized = str(rel_type).strip().upper()
+    if normalized in ("ACTIVE MOIETY", "SUBSTANCE PART"):
+        return "active_moieties"
+    if normalized == "METABOLITE INACTIVE->PARENT":
+        return "metabolites"
+    if normalized == "IMPURITY->PARENT":
+        return "impurities"
+    if "CONSTITUENT" in normalized:
+        return "constituents"
+    if normalized == "SALT/SOLVATE->PARENT":
+        return "salts_or_solvates"
+    return "other"
+
+
+# Sub-section order + display titles. The chunker's sub-section
+# names (``activemoiety`` / ``metabolites`` / etc.) are the source of
+# truth; the summary uses human-friendly titles for the markdown
+# output while the routing key is shared.
+_RELATIONSHIP_SECTION_TITLES: dict[str, str] = {
+    "active_moieties": "Active Moieties",
+    "metabolites": "Metabolites",
+    "impurities": "Impurities",
+    "constituents": "Constituents",
+    "salts_or_solvates": "Salts or Solvates",
+    "other": "Other Relationships",
+}
+
+
 def _format_relationships(relationships: list[Any]) -> list[str]:
-    """Render the relationships table."""
-    rows: list[dict[str, Any]] = []
-    for entry in relationships[:50]:
+    """Render the relationships block, split into typed sub-sections.
+
+    Each relationship is routed to a sub-section based on its ``type``
+    — mirroring the identifiers / classifications split used for
+    codes — so a single call to the summary tool surfaces the full
+    relationship picture in a structured form:
+
+    * **Active Moieties** — ``ACTIVE MOIETY`` / ``SUBSTANCE PART``
+    * **Metabolites** — ``METABOLITE INACTIVE->PARENT``
+    * **Impurities** — ``IMPURITY->PARENT``
+    * **Constituents** — types containing ``CONSTITUENT``
+    * **Salts or Solvates** — ``SALT/SOLVATE->PARENT``
+    * **Other Relationships** — any other type
+
+    Each non-empty sub-section is rendered as its own markdown table;
+    the section is omitted entirely when there are no matching rows.
+    Rows are limited to the first 50 per sub-section to keep the
+    summary readable.
+    """
+    if not isinstance(relationships, list) or not relationships:
+        return []
+
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "active_moieties": [],
+        "metabolites": [],
+        "impurities": [],
+        "constituents": [],
+        "salts_or_solvates": [],
+        "other": [],
+    }
+    for entry in relationships:
         if not isinstance(entry, dict):
             continue
+        rel_type = entry.get("type", "unknown")
         related = entry.get("relatedSubstance") or {}
-        rows.append(
+        buckets[_section_for_relationship_type(rel_type)].append(
             {
-                "type": entry.get("type"),
+                "type": rel_type,
                 "related_substance": _resolve_substance_name(related),
                 "qualification": entry.get("qualification"),
                 "access": _format_access(entry.get("access")),
             }
         )
-    return _section_header("Relationships") + _format_table(
-        rows, ["type", "related_substance", "qualification", "access"]
-    )
+
+    md: list[str] = _section_header("Relationships")
+    for key, title in _RELATIONSHIP_SECTION_TITLES.items():
+        rows = buckets.get(key) or []
+        if not rows:
+            continue
+        md += _section_header(title, level=3)
+        md += _format_table(
+            rows[:50], ["type", "related_substance", "qualification", "access"]
+        )
+        md.append("")
+    return md
 
 
 def _format_properties(properties: list[Any]) -> list[str]:
