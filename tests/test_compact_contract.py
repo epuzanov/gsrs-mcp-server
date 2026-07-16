@@ -20,6 +20,7 @@ class TestCompactToolContract(unittest.TestCase):
         "gsrs_get_facets",
         "gsrs_get_cv_domains",
         "gsrs_get_cv_terms",
+        "gsrs_get_schema",
         "gsrs_structure_search",
         "gsrs_sequence_search",
         "health",
@@ -32,6 +33,7 @@ class TestCompactToolContract(unittest.TestCase):
         "gsrs://substances/{identifier}/details/{filter}",
         "gsrs://cv/domains",
         "gsrs://cv/{domain}/terms",
+        "gsrs://schema/{model}",
         "server://health",
         "server://statistics",
     ]
@@ -103,6 +105,7 @@ class TestCompactToolContract(unittest.TestCase):
             "gsrs_get_facets",
             "gsrs_get_cv_domains",
             "gsrs_get_cv_terms",
+            "gsrs_get_schema",
             "gsrs_structure_search",
             "gsrs_sequence_search",
             "health",

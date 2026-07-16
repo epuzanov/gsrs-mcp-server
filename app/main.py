@@ -18,6 +18,12 @@ from app.config import settings
 from app.observability import ToolTelemetry, configure_logging
 from app.runtime import ServerRuntime
 from app.services.details import FilterError, validate_filter
+from app.services.gsrs_schema import (
+    GsrsSchemaError,
+    SUPPORTED_MODELS as GSRS_SCHEMA_MODELS,
+    get_model_schema,
+    get_model_schema_text,
+)
 from app.services.summary import substance_to_markdown
 
 configure_logging(
@@ -115,6 +121,7 @@ mcp = FastMCP(
         "Resources: gsrs://substances/{identifier} for raw JSON, gsrs://substances/{identifier}/summary for markdown summary, "
         "gsrs://substances/{identifier}/details/{filter} for the GSRS details section, "
         "gsrs://cv/domains for controlled vocabulary domain list, gsrs://cv/{domain}/terms for controlled vocabulary lookup, "
+        "gsrs://schema/{model} for the Pydantic JSON Schema of a GSRS substance model (use as a reference for field names when calling gsrs_parametric_search or gsrs_get_substance_details), "
         "and server://health / server://statistics for runtime state. "
         "Use get_parent_context to explore parent context for specific chunks. "
         "Prompts: fetch_substance and substance_summary for GSRS record lookup; "
@@ -569,6 +576,16 @@ async def gsrs_get_substance_details(
     filter steps is joined with ``!`` and appended to the path
     ``/api/v1/substances({uuid})/{joined}`` to narrow the response.
 
+    **Reference for element paths:** before building a multi-step
+    filter, call ``gsrs_get_schema(model="Substance")`` (or the
+    matching subclass, e.g. ``ChemicalSubstance``) to fetch the
+    Pydantic JSON Schema. The schema's top-level ``properties``
+    keys are the legal element paths (e.g. ``names``,
+    ``codes``, ``relationships``, ``protein``); nested model
+    definitions under ``$defs`` are addressable as
+    ``parent/child`` paths. The schema is also exposed as the
+    resource ``gsrs://schema/{model}``.
+
     Args:
         substance_identifier: GSRS substance UUID, approval ID, or
             display name. Names are resolved to a UUID via a name
@@ -712,6 +729,15 @@ async def gsrs_parametric_search(
 
     GSRS indexes substance records with Lucene. Use this tool for general
     substance lookup and for narrowing results by indexed fields.
+
+    **Reference for indexed field names:** the ``filters`` argument
+    uses Lucene-indexed ``root_<field>`` paths whose names mirror
+    the Pydantic attributes of the GSRS substance model. Before
+    building a complex ``filters`` object, call
+    ``gsrs_get_schema(model="Substance")`` (or the matching
+    subclass) to fetch the canonical JSON Schema; the top-level
+    ``properties`` keys are the legal base field names. The
+    schema is also exposed as the resource ``gsrs://schema/{model}``.
 
     Args:
         query: Free-text search (names, codes, identifiers, etc.). GSRS promotes
@@ -951,6 +977,78 @@ async def gsrs_get_cv_terms(domain: str) -> str:
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
         return f"GSRS get CV terms error: {exc}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+async def gsrs_get_schema(model: str = "Substance") -> str:
+    """Return the Pydantic JSON Schema for a GSRS substance model.
+
+    This tool exposes the JSON Schema of the vendored
+    ``gsrs.model`` Pydantic classes (``Substance``,
+    ``ChemicalSubstance``, ``ProteinSubstance``, etc.) so the model
+    can use them as a reference for:
+
+    - **Indexed field names** — GSRS uses Lucene-indexed
+      ``root_<field>`` paths whose names mirror the Pydantic
+      attributes; consult the schema before building
+      ``gsrs_parametric_search`` ``filters`` arguments.
+    - **Element paths** — ``gsrs_get_substance_details`` walks the
+      substance JSON via ``/``-separated element paths. Knowing
+      the model attributes (and their nested ``$defs``) lets the
+      model build accurate paths like ``names``,
+      ``relationships/relatedSubstance``, or
+      ``protein/subunits``.
+
+    Args:
+        model: One of the supported GSRS Pydantic model class
+            names. Default ``"Substance"`` (the polymorphic base).
+            Other valid options: ``"ChemicalSubstance"``,
+            ``"ProteinSubstance"``, ``"NucleicAcidSubstance"``,
+            ``"MixtureSubstance"``, ``"PolymerSubstance"``,
+            ``"StructurallyDiverseSubstance"``.
+
+    Returns:
+        A JSON document string with the model's JSON Schema. The
+        top-level ``properties`` keys are the substance fields;
+        nested models appear under ``$defs``. The document is the
+        exact output of ``Pydantic.model_json_schema()``.
+
+    Example:
+        gsrs_get_schema("ChemicalSubstance")
+    """
+    _ensure_runtime_initialized()
+    tool = _tool_call("gsrs_get_schema", query_type="schema")
+    try:
+        # Delegate to the canonical resource implementation (single
+        # source of truth) so the tool output exactly matches the
+        # ``gsrs://schema/{model}`` resource payload.
+        result = await gsrs_schema_resource(model)
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("error"):
+            error = str(parsed["error"])
+            # Distinguish user errors (unknown model) from server
+            # errors (gsrs-model not installed) so the tool finish
+            # telemetry is accurate.
+            if "Unknown GSRS model" in error or "model_not_found" in error:
+                tool.finish("abstained", result_count=0, citation_count=0)
+            else:
+                tool.finish("degraded", result_count=0, citation_count=0, error_message=error)
+        else:
+            tool.finish("success", result_count=1, citation_count=0)
+        return result
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"GSRS get_schema error: {exc}"
 
 
 @mcp.tool(
@@ -1257,6 +1355,60 @@ def _split_filter_text(filter_text: str | None) -> list[str]:
     if not text:
         return []
     return [step.strip() for step in text.split("!") if step.strip()]
+
+
+@mcp.resource("gsrs://schema/{model}", mime_type="application/json")
+async def gsrs_schema_resource(model: str) -> str:
+    """Return the Pydantic JSON Schema for a GSRS substance model.
+
+    Implements the JSON-Schema side of the contract exposed by
+    :func:`gsrs_get_schema`. The schema is sourced from the
+    vendored ``gsrs.model`` Pydantic classes and is intended as a
+    *reference* for the LLM-driven tools:
+
+    - **Indexed field names** — GSRS uses Lucene-indexed
+      ``root_<field>`` paths whose names mirror the Pydantic
+      attributes; consult the schema before building
+      ``gsrs_parametric_search`` ``filters`` arguments.
+    - **Element paths** — ``gsrs_get_substance_details`` walks the
+      substance JSON via ``/``-separated element paths. Knowing
+      the model attributes (and their nested ``$defs``) lets the
+      model build accurate paths like ``names``,
+      ``relationships/relatedSubstance``, or
+      ``protein/subunits``.
+
+    Args:
+        model: One of the supported GSRS Pydantic model class
+            names (``Substance``, ``ChemicalSubstance``,
+            ``ProteinSubstance``, ``NucleicAcidSubstance``,
+            ``MixtureSubstance``, ``PolymerSubstance``,
+            ``StructurallyDiverseSubstance``).
+
+    Returns:
+        A JSON document string with the model's JSON Schema. The
+        top-level ``properties`` keys are the substance fields;
+        nested models appear under ``$defs``. The document is the
+        exact output of ``Pydantic.model_json_schema()``.
+
+    On error, returns a JSON document of the form
+    ``{"error": "...", "code": "model_not_found|dependency_missing|model_unavailable"}``
+    so callers can distinguish user errors (unknown model) from
+    server errors (gsrs-model not installed).
+    """
+    model_name = (model or "").strip() or "Substance"
+    try:
+        schema = get_model_schema(model_name)
+    except GsrsSchemaError as exc:
+        return json.dumps({"error": exc.message, "code": exc.code}, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "code": "internal_error"}, indent=2)
+    # Always include the requested model name so URI callers can
+    # tell the response apart from a generic blob.
+    return json.dumps(
+        {"model": model_name, "schema": schema},
+        indent=2,
+        default=str,
+    )
 
 
 @mcp.resource("gsrs://cv/domains", mime_type="application/json")
