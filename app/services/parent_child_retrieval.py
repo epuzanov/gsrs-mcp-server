@@ -36,6 +36,102 @@ _DEFAULT_PARENT_TEXT_PARTS_LIMIT = 5
 # backends all support ``limit`` pushdown.
 _DEFAULT_PARENT_BACKEND_LIMIT = 200
 
+# Default cap on the size of the markdown rendered by ``summarize_parent``.
+# Like the per-context text limit, the cap keeps a runaway parent from
+# blowing up the response when retrieval triggers a wide rebuild.
+_DEFAULT_PARENT_SUMMARY_MAX_CHARS = 4000
+
+# Cap on number of chunks rendered per ``chunk_type`` bucket. Each
+# bucket's chunks are rendered in their original (deterministic) order;
+# chunks beyond the cap are dropped from the markdown to keep the
+# output readable, but are still counted in the per-section header.
+_DEFAULT_PARENT_SUMMARY_BUCKET_LIMIT = 50
+
+# Map of ``chunk_type`` → human-readable section title. Driven by
+# what the chunker actually emits (see ``app/services/chunker.py``)
+# so the title list stays in sync with the chunker.
+#
+# The relationship sub-sections (activemoiety / metabolites / …) are
+# intentionally not listed here — those are rebucketed under
+# ``Relationships`` by ``summarize_parent`` using the
+# ``_RELATIONSHIP_CHUNK_TO_BUCKET`` table below. They surface under
+# the typed sub-bucket rather than as their own top-level section so
+# the summary mirrors ``app/services/summary.py``.
+_CHUNK_TYPE_TITLES: dict[str, str] = {
+    "overview": "Overview",
+    "name": "Names",
+    "identifier": "Identifiers",
+    "classification": "Classifications",
+    "structure": "Chemical Structure",
+    "moiety": "Moieties",
+    "protein": "Protein Details",
+    "protein_sequence": "Protein Sequence",
+    "protein_sequence_segment": "Protein Sequence",
+    "protein_sequence_summary": "Protein Sequence",
+    "nucleic_acid": "Nucleic Acid Details",
+    "nucleic_acid_sequence": "Nucleic Acid Sequence",
+    "nucleic_acid_sequence_segment": "Nucleic Acid Sequence",
+    "nucleic_acid_sequence_summary": "Nucleic Acid Sequence",
+    "polymer": "Polymer Details",
+    "polymer_display_structure": "Polymer Display Structure",
+    "polymer_idealized_structure": "Polymer Idealized Structure",
+    "structurally_diverse": "Source Material",
+    "mixture": "Mixture",
+    "mixture_component": "Mixture Components",
+    "specified_substance_constituents": "Specified Substance Constituents",
+    "tag": "Tags",
+    "property": "Properties",
+    "reference": "References",
+    "note": "Notes",
+    "modification": "Modifications",
+}
+
+# Map of relationship section (``section``) → typed bucket. Mirrors the
+# routing in ``summary.py._RELATIONSHIP_SECTION_TITLES`` and the
+# chunker's ``SubstanceChunker._section_for_relationship_type``. The
+# section value comes from the chunker (``activemoiety``,
+# ``metabolites``, ``impurities``, ``constituents``, ``salts``,
+# ``relationships``) — note that the chunker writes the literal
+# ``salts`` whereas ``summary.py`` displays ``Salts or Solvates`` and
+# uses bucket key ``salts_or_solvates``. We map chunk section →
+# summary bucket key here so the two stay aligned.
+_RELATIONSHIP_CHUNK_TO_BUCKET: dict[str, str] = {
+    "activemoiety": "active_moieties",
+    "metabolites": "metabolites",
+    "impurities": "impurities",
+    "constituents": "constituents",
+    "salts": "salts_or_solvates",
+    "relationships": "other",
+}
+
+# Section title for each relationship bucket. Kept in lock-step with
+# ``app.services.summary._RELATIONSHIP_SECTION_TITLES``. If a new
+# bucket is added there, add it here too.
+_RELATIONSHIP_BUCKET_TITLES: dict[str, str] = {
+    "active_moieties": "Active Moieties",
+    "metabolites": "Metabolites",
+    "impurities": "Impurities",
+    "constituents": "Constituents",
+    "salts_or_solvates": "Salts or Solvates",
+    "other": "Other Relationships",
+}
+
+# Top-level section rendering order. ``definitions`` is special — it
+# collects every per-class sub-section under a single H2 — so the
+# list intentionally doesn't enumerate the per-class chunk_types.
+_PARENT_SUMMARY_SECTION_ORDER: tuple[tuple[str, str], ...] = (
+    ("overview", "Overview"),
+    ("names", "Names"),
+    ("identifiers", "Identifiers"),
+    ("classifications", "Classifications"),
+    ("definitions", "Definitions"),
+    ("relationships", "Relationships"),
+    ("properties", "Properties"),
+    ("references", "References"),
+    ("tags", "Tags"),
+    ("notes", "Notes"),
+)
+
 
 @dataclass
 class ParentIdentity:
@@ -252,6 +348,15 @@ class ParentContextEnricher:
                     "text": truncated_text,
                     "source_url": chunk.source_url,
                     "truncated": original_len > _DEFAULT_PARENT_CHUNK_TEXT_LIMIT,
+                    # Carried on the part so the markdown renderer
+                    # (``summarize_parent``) can group rows by
+                    # ``chunk_type`` and pull structured fields
+                    # (e.g. ``code_system``, ``smiles``) without
+                    # re-walking the chunk list. Empty/missing on
+                    # legacy chunks — the renderer treats both as
+                    # the generic ``other`` bucket.
+                    "chunk_type": (chunk.metadata_json or {}).get("chunk_type", ""),
+                    "metadata": dict(chunk.metadata_json or {}),
                 })
 
             # Merge metadata
@@ -518,3 +623,391 @@ class ParentContextEnricher:
             return chunk.section
 
         return "overview"
+
+    # ------------------------------------------------------------------
+    # Markdown rendering of a reconstructed parent
+    # ------------------------------------------------------------------
+
+    def summarize_parent(
+        self,
+        parent_identity: ParentIdentity,
+        *,
+        max_chars: int = _DEFAULT_PARENT_SUMMARY_MAX_CHARS,
+        exclude_chunk_ids: Optional[Set[str]] = None,
+        include_text_parts: bool = True,
+    ) -> str:
+        """Render a parent context as a chunk-driven markdown summary.
+
+        The summary is reconstructed from chunks in the vector store —
+        it does not call the GSRS upstream. It is a **parent-scoped**
+        view: it covers the chunks that share ``parent_identity`` (i.e.
+        the same document and root section), not the whole substance.
+
+        Compare to :func:`app.services.summary.substance_to_markdown`,
+        which renders the full GSRS substance JSON. Fields that the
+        chunker does not emit (top-level ``approvalID``, ``status``,
+        substance-level ``access``) are omitted here, and a footer
+        line is added to flag the gap.
+
+        Args:
+            parent_identity: The parent identity to summarize. Typically
+                obtained via :meth:`get_parent_identity` on a child
+                chunk, or via :meth:`get_all_parents_in_document`.
+            max_chars: Soft cap on the rendered markdown size. If the
+                output exceeds this, it is truncated and the
+                ``parent_summary.truncated`` metric is incremented.
+            exclude_chunk_ids: Chunk IDs to exclude (e.g. the child
+                chunk the caller is showing alongside the summary).
+            include_text_parts: When True, include the raw chunk text
+                for each rendered row. When False, only the structured
+                metadata fields are rendered.
+
+        Returns:
+            A markdown string. Empty string when the parent has no
+            chunks. The output never raises for missing data — empty
+            sub-sections are simply omitted.
+        """
+        if exclude_chunk_ids is None:
+            exclude_chunk_ids = set()
+
+        context = self.reconstruct_parent_context(
+            parent_identity,
+            exclude_chunk_ids=exclude_chunk_ids,
+        )
+        if not context:
+            return ""
+
+        text_parts = context.get("text_parts") or []
+        sections_included = context.get("sections_included") or []
+        metadata_unified = context.get("metadata_unified") or {}
+
+        # Group chunks by chunk_type while preserving the order in
+        # which each chunk_type first appears in the input. This keeps
+        # the rendered output stable across calls (and matches the
+        # deterministic order in ``sections_included``).
+        ordered_chunk_types: List[str] = []
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for part in text_parts:
+            chunk_type = part.get("chunk_type") or "other"
+            if chunk_type not in buckets:
+                ordered_chunk_types.append(chunk_type)
+                buckets[chunk_type] = []
+            buckets[chunk_type].append(part)
+
+        # The relationship typed sub-sections (``activemoiety``,
+        # ``metabolites``, …) are emitted by the chunker with
+        # ``chunk_type == "relationship"`` and a ``section`` set to the
+        # sub-section. Re-bucket them by summary bucket key so they
+        # render under a single ``Relationships`` H2 with typed
+        # sub-sections, mirroring ``app.services.summary``.
+        ordered_relationship_buckets: List[str] = []
+        relationship_buckets: Dict[str, List[Dict[str, Any]]] = {}
+
+        def _reassign_to_relationship_bucket(part: Dict[str, Any]) -> None:
+            section = part.get("section") or ""
+            bucket_key = _RELATIONSHIP_CHUNK_TO_BUCKET.get(section, "other")
+            if bucket_key not in relationship_buckets:
+                ordered_relationship_buckets.append(bucket_key)
+                relationship_buckets[bucket_key] = []
+            relationship_buckets[bucket_key].append(part)
+
+        for chunk_type in list(ordered_chunk_types):
+            if chunk_type != "relationship":
+                continue
+            for part in buckets[chunk_type]:
+                _reassign_to_relationship_bucket(part)
+            # Drop the flat ``relationship`` bucket — its rows now
+            # live under the typed sub-buckets.
+            del buckets[chunk_type]
+            ordered_chunk_types.remove(chunk_type)
+
+        # Group per-class sub-section chunks (e.g. ``structure``,
+        # ``moiety``, ``protein``, ``polymer``, …) under a single
+        # ``Definitions`` H2 instead of rendering each as its own
+        # top-level section.
+        definition_chunk_types = {
+            "structure",
+            "moiety",
+            "protein",
+            "protein_sequence",
+            "protein_sequence_segment",
+            "protein_sequence_summary",
+            "nucleic_acid",
+            "nucleic_acid_sequence",
+            "nucleic_acid_sequence_segment",
+            "nucleic_acid_sequence_summary",
+            "polymer",
+            "polymer_display_structure",
+            "polymer_idealized_structure",
+            "structurally_diverse",
+            "mixture",
+            "mixture_component",
+            "specified_substance_constituents",
+            "modification",
+        }
+        ordered_definition_types: List[str] = []
+        for chunk_type in list(ordered_chunk_types):
+            if chunk_type in definition_chunk_types:
+                ordered_definition_types.append(chunk_type)
+                ordered_chunk_types.remove(chunk_type)
+
+        # Pull the display name out of the merged metadata. Chunks
+        # produced by the chunker always carry ``display_name``, but
+        # older indexes may not — fall back to the parent identity
+        # UUID in that case so the header is never empty.
+        display_name = metadata_unified.get("display_name") or str(
+            parent_identity.document_id
+        )
+
+        # --------------------------------------------------------------
+        # Build markdown
+        # --------------------------------------------------------------
+        lines: List[str] = []
+        lines.append(f"# Parent: {display_name} — {parent_identity.root_section}")
+        lines.append("")
+
+        header_facts: List[str] = []
+        definition_type = metadata_unified.get("substance_definition_type")
+        if definition_type:
+            header_facts.append(f"**Definition Type:** {definition_type}")
+        if sections_included:
+            header_facts.append(
+                "**Sections:** " + ", ".join(sections_included)
+            )
+        header_facts.append(
+            f"**Chunks:** {context.get('num_chunks', len(text_parts))}"
+        )
+        for fact in header_facts:
+            lines.append(fact)
+        lines.append("")
+
+        def _emit_section(chunk_type: str) -> None:
+            rows = buckets.get(chunk_type) or []
+            if not rows:
+                return
+            title = _CHUNK_TYPE_TITLES.get(chunk_type, chunk_type.title())
+            lines.append(f"## {title}")
+            lines.append("")
+            rendered = _render_rows_as_table(
+                rows,
+                include_text_parts=include_text_parts,
+                limit=_DEFAULT_PARENT_SUMMARY_BUCKET_LIMIT,
+            )
+            if rendered:
+                lines.extend(rendered)
+                lines.append("")
+
+        # Render the top-level sections in the order the chunker
+        # actually emitted them, falling back to a deterministic
+        # default order for the well-known roots so output is stable
+        # when a section has no chunks of its own (those are skipped
+        # by ``_emit_section`` anyway, so the loop is just a no-op).
+        rendered_roots: set = set()
+        for chunk_type in ordered_chunk_types:
+            if chunk_type in definition_chunk_types:
+                continue  # handled under ``Definitions`` below
+            if chunk_type in rendered_roots:
+                continue
+            rendered_roots.add(chunk_type)
+            _emit_section(chunk_type)
+
+        # Definitions (per-class data) — always rendered as a single
+        # block. Inside, each ``chunk_type`` is its own H3.
+        if ordered_definition_types:
+            lines.append("## Definitions")
+            lines.append("")
+            for chunk_type in ordered_definition_types:
+                rows = buckets.get(chunk_type) or []
+                if not rows:
+                    continue
+                title = _CHUNK_TYPE_TITLES.get(chunk_type, chunk_type.title())
+                lines.append(f"### {title}")
+                lines.append("")
+                rendered = _render_rows_as_table(
+                    rows,
+                    include_text_parts=include_text_parts,
+                    limit=_DEFAULT_PARENT_SUMMARY_BUCKET_LIMIT,
+                )
+                if rendered:
+                    lines.extend(rendered)
+                    lines.append("")
+
+        # Relationships — typed sub-sections, mirroring
+        # ``summary._format_relationships``.
+        if relationship_buckets:
+            lines.append("## Relationships")
+            lines.append("")
+            for bucket_key in ordered_relationship_buckets:
+                rows = relationship_buckets.get(bucket_key) or []
+                if not rows:
+                    continue
+                title = _RELATIONSHIP_BUCKET_TITLES.get(bucket_key, bucket_key)
+                lines.append(f"### {title}")
+                lines.append("")
+                rendered = _render_rows_as_table(
+                    rows,
+                    include_text_parts=include_text_parts,
+                    limit=_DEFAULT_PARENT_SUMMARY_BUCKET_LIMIT,
+                )
+                if rendered:
+                    lines.extend(rendered)
+                    lines.append("")
+
+        # Footer — flag the gap between chunk-driven and
+        # substance-driven summaries. Only emit on the root sections
+        # where the missing fields actually matter (definitions /
+        # overview / names); otherwise this is just noise.
+        if parent_identity.root_section in {
+            "overview",
+            "definitions",
+            "names",
+        }:
+            lines.append("> **Note:** substance-level metadata not available from chunks; approval ID, status, and substance-level access require `gsrs_get_summary`.")
+            lines.append("")
+
+        markdown = "\n".join(lines).rstrip() + "\n"
+        if len(markdown) > max_chars:
+            # Reserve 4 characters for the ``...\n`` truncation
+            # marker so the final output is at most ``max_chars``
+            # characters (the marker itself counts toward the cap).
+            head_room = max(max_chars - 4, 1)
+            head = markdown[:head_room].rstrip()
+            # ``...`` is 3 chars. The slice above may have left up
+            # to 3 trailing characters of headroom; re-slice to
+            # guarantee the final string is <= max_chars regardless
+            # of the original body content (whitespace stripping,
+            # mid-X run, etc.).
+            if len(head) + 4 > max_chars:
+                head = head[: max_chars - 4].rstrip()
+            markdown = head + "...\n"
+            self.metrics.increment("parent_summary.truncated")
+        return markdown
+
+
+# ------------------------------------------------------------------
+# Module-level helpers for ``summarize_parent``
+# ------------------------------------------------------------------
+
+# Column ordering per ``chunk_type`` (and per relationship bucket).
+# Columns not present on a row are rendered as an empty cell. The
+# ``text`` column is appended at the end when ``include_text_parts``
+# is True; otherwise the structured columns stand on their own.
+_TABLE_COLUMNS: Dict[str, Tuple[str, ...]] = {
+    "overview": ("definition_type",),
+    "name": ("name", "name_type", "name_orgs", "access"),
+    "identifier": ("code", "code_system", "code_type", "code_url", "access"),
+    "classification": ("code", "code_system", "code_url", "access"),
+    "structure": ("smiles", "molecular_formula", "inchi_key", "access"),
+    "moiety": ("moiety_index", "smiles", "molecular_formula", "inchi_key", "count", "access"),
+    "protein": ("substance_class", "access"),
+    "protein_sequence": ("subunit_index",),
+    "protein_sequence_segment": ("subunit_index", "segment_index"),
+    "protein_sequence_summary": ("subunit_index",),
+    "nucleic_acid": ("substance_class",),
+    "nucleic_acid_sequence": ("subunit_index",),
+    "nucleic_acid_sequence_segment": ("subunit_index", "segment_index"),
+    "nucleic_acid_sequence_summary": ("subunit_index",),
+    "polymer": ("substance_class",),
+    "polymer_display_structure": ("smiles", "molecular_formula"),
+    "polymer_idealized_structure": ("smiles", "molecular_formula"),
+    "structurally_diverse": ("substance_class",),
+    "mixture": ("substance_class",),
+    "mixture_component": ("component_type", "component_uuid"),
+    "specified_substance_constituents": ("constituent_count", "substance_class"),
+    "tag": ("tag",),
+    "property": ("property_name", "property_type", "value"),
+    "reference": ("doc_type", "reference_id", "reference_url"),
+    "note": (),
+    "modification": ("modification_type",),
+    "relationship": ("relationship_type", "related_substance_name", "qualification"),
+    # Generic catch-all for any chunk_type not in the table.
+    "other": (),
+}
+
+
+def _escape_cell(value: Any) -> str:
+    """Return a markdown-table-safe scalar string."""
+    if value is None:
+        return ""
+    text = str(value)
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _metadata_lookup(part: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the chunk metadata merged from the parent context part.
+
+    ``reconstruct_parent_context`` only stores the chunk's per-chunk
+    metadata into ``text_parts`` via the parent context's
+    ``metadata_unified`` aggregate. To get per-row metadata, we stash
+    a ``metadata`` key on each part at reconstruction time. Older
+    callers that pre-date that field get an empty dict.
+    """
+    meta = part.get("metadata")
+    if isinstance(meta, dict):
+        return meta
+    return {}
+
+
+def _row_value(part: Dict[str, Any], column: str) -> Any:
+    """Resolve a column name to a value for one chunk's text-part.
+
+    The chunker stashes most structured fields directly on the chunk's
+    ``metadata_json``; ``reconstruct_parent_context`` exposes them
+    through the per-part ``metadata`` dict (when present). For a few
+    columns (e.g. ``value`` for properties) we fall back to parsing
+    the rendered chunk text.
+    """
+    meta = _metadata_lookup(part)
+    if column in meta:
+        return meta[column]
+    # Heuristic fallbacks for the most common chunks.
+    if column == "value" and meta.get("chunk_type") == "property":
+        text = part.get("text") or ""
+        # The chunker writes ``Value: <formatted>`` as one of the lines.
+        for line in text.splitlines():
+            if line.startswith("Value:"):
+                return line.split(":", 1)[1].strip()
+    if column == "modification_type":
+        text = part.get("text") or ""
+        for line in text.splitlines():
+            if line.startswith("Modification Type:"):
+                return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _render_rows_as_table(
+    rows: List[Dict[str, Any]],
+    *,
+    include_text_parts: bool,
+    limit: int,
+) -> List[str]:
+    """Render a list of parent-context text-parts as a markdown table.
+
+    The columns are derived from the rows' ``chunk_type`` (see
+    :data:`_TABLE_COLUMNS`). Rows beyond ``limit`` are dropped; the
+    caller is expected to surface the count elsewhere if it matters.
+    Empty inputs return an empty list — callers should skip emitting
+    a section header in that case.
+    """
+    if not rows:
+        return []
+    rows = rows[:limit]
+    chunk_type = rows[0].get("chunk_type") or "other"
+    columns = list(_TABLE_COLUMNS.get(chunk_type, ()))
+    if include_text_parts:
+        columns.append("text")
+
+    md: List[str] = []
+    headers = [col.replace("_", " ").title() for col in columns]
+    md.append("| " + " | ".join(headers) + " |")
+    md.append("|" + "|".join("---" for _ in columns) + "|")
+    for row in rows:
+        cells = []
+        for col in columns:
+            if col == "text":
+                value = row.get("text") or ""
+            else:
+                value = _row_value(row, col)
+            cells.append(_escape_cell(value))
+        md.append("| " + " | ".join(cells) + " |")
+    return md

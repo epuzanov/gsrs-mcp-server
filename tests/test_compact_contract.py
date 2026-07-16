@@ -13,6 +13,7 @@ class TestCompactToolContract(unittest.TestCase):
         "rag_ingest",
         "rag_query",
         "get_parent_context",
+        "get_parent_summary",
         "gsrs_get_substance",
         "gsrs_get_summary",
         "gsrs_get_substance_details",
@@ -30,6 +31,7 @@ class TestCompactToolContract(unittest.TestCase):
     EXPECTED_RESOURCE_URIS = [
         "gsrs://substances/{identifier}",
         "gsrs://substances/{identifier}/summary",
+        "gsrs://substances/{identifier}/parents/{root_section}/summary",
         "gsrs://substances/{identifier}/details/{filter}",
         "gsrs://cv/domains",
         "gsrs://cv/{domain}/terms",
@@ -98,6 +100,7 @@ class TestCompactToolContract(unittest.TestCase):
             "rag_query_chunks",
             "rag_query",
             "get_parent_context",
+            "get_parent_summary",
             "gsrs_get_substance",
             "gsrs_get_summary",
             "gsrs_get_substance_details",

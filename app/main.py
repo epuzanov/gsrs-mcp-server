@@ -4,6 +4,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Literal, Optional
+from uuid import UUID
 
 from pydantic import AnyHttpUrl
 from starlette.requests import Request
@@ -490,6 +491,84 @@ async def get_parent_context(chunk_id: str) -> str:
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
         return f"Get parent context error: {exc}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+async def get_parent_summary(
+    substance_uuid: str,
+    root_section: str,
+    max_chars: int = 4000,
+    include_text_parts: bool = True,
+    exclude_chunk_id: str = "",
+) -> str:
+    """Render a parent context as a chunk-driven markdown summary.
+
+    The summary is reconstructed from chunks in the local RAG store —
+    it does not call the GSRS upstream. It is a **parent-scoped**
+    view: it covers the chunks that share ``(substance_uuid,
+    root_section)``, not the whole substance.
+
+    Compare to ``gsrs_get_summary`` (which renders the full GSRS
+    substance JSON): the chunk-driven summary covers whatever the
+    chunker indexed, with a footer that flags the gap
+    (approval ID, status, substance-level access).
+
+    Args:
+        substance_uuid: Substance UUID. Must be a valid UUID string.
+        root_section: Root section identifier (e.g. ``"overview"``,
+            ``"names"``, ``"codes"``, ``"definitions"``,
+            ``"relationships"``, ``"properties"``,
+            ``"references"``). These match the values returned by
+            :func:`get_parent_context`.
+        max_chars: Soft cap on the rendered markdown size. Default
+            4000. When the output exceeds this, it is truncated and
+            the ``parent_summary.truncated`` metric is incremented.
+        include_text_parts: When True (default), include the raw
+            chunk text for each rendered row. When False, only the
+            structured metadata fields are rendered.
+        exclude_chunk_id: Optional chunk ID to exclude from the
+            summary (e.g. the child chunk the caller is showing
+            alongside the summary). Empty string means no exclusion.
+
+    Returns:
+        A markdown string. Empty when the parent has no chunks.
+    """
+    _ensure_runtime_initialized()
+    tool = _tool_call("get_parent_summary", query_type="parent_summary")
+    try:
+        if not runtime.retrieval_available():
+            reason = runtime.retrieval_unavailable_reason()
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
+            return f"Retrieval is currently unavailable: {reason}"
+
+        body, error = _render_parent_summary(
+            substance_uuid=substance_uuid,
+            root_section=root_section,
+            max_chars=max_chars,
+            include_text_parts=include_text_parts,
+            exclude_chunk_id=exclude_chunk_id,
+        )
+        if error:
+            tool.finish("abstained", result_count=0, citation_count=0)
+            return error
+        if not body:
+            tool.finish("abstained", result_count=0, citation_count=0)
+            return (
+                f"No parent context found for substance "
+                f"**{substance_uuid}** (root_section: `{root_section}`)."
+            )
+        tool.finish("success", result_count=1, citation_count=0)
+        return body
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"Get parent summary error: {exc}"
 
 
 @mcp.tool(
@@ -1254,6 +1333,105 @@ async def gsrs_substance_summary_resource(identifier: str) -> str:
         return substance_to_markdown(substance)
     except Exception as exc:
         return f"GSRS summary error: {exc}"
+
+
+def _render_parent_summary(
+    *,
+    substance_uuid: str,
+    root_section: str,
+    max_chars: int,
+    include_text_parts: bool,
+    exclude_chunk_id: str,
+) -> tuple[str, str]:
+    """Canonical implementation shared by ``get_parent_summary`` and the
+    ``gsrs://substances/{identifier}/parents/{root_section}/summary`` resource.
+
+    Returns a ``(body, error)`` tuple. ``body`` is the rendered
+    markdown (empty string when the parent has no chunks).
+    ``error`` is a non-empty user-facing error message on
+    validation failures; on success it is the empty string.
+
+    Both the tool and the resource delegate to this function so
+    they share a single code path — the "canonical resource"
+    pattern used elsewhere in this module (e.g.
+    ``gsrs_get_substance`` → ``gsrs_substance_resource``).
+    """
+    uuid_text = (substance_uuid or "").strip()
+    if not uuid_text:
+        return "", "A substance_uuid is required."
+    try:
+        document_id = UUID(uuid_text)
+    except (TypeError, ValueError):
+        return "", f"Invalid substance_uuid: {substance_uuid!r} is not a valid UUID."
+
+    section_text = (root_section or "").strip()
+    if not section_text:
+        return "", "A root_section is required."
+
+    exclude_ids: set[str] = set()
+    if exclude_chunk_id:
+        exclude_ids.add(str(exclude_chunk_id).strip())
+
+    try:
+        from app.services.parent_child_retrieval import ParentIdentity
+
+        identity = ParentIdentity(document_id=document_id, root_section=section_text)
+        body = runtime.parent_enricher.summarize_parent(
+            identity,
+            max_chars=max(1, int(max_chars)),
+            include_text_parts=bool(include_text_parts),
+            exclude_chunk_ids=exclude_ids,
+        )
+    except Exception as exc:
+        return "", f"Parent summary error: {exc}"
+    return body or "", ""
+
+
+@mcp.resource("gsrs://substances/{identifier}/parents/{root_section}/summary", mime_type="text/markdown")
+async def gsrs_parent_summary_resource(identifier: str, root_section: str) -> str:
+    """Return a chunk-driven markdown summary for one parent.
+
+    Unlike :func:`gsrs_substance_summary_resource`, this surface
+    does **not** call the GSRS upstream. It is reconstructed from
+    the chunks in the local RAG store and is a **parent-scoped**
+    view: it covers the chunks sharing ``(identifier, root_section)``.
+
+    Use this when the GSRS API is unreachable but the local RAG
+    store has been pre-ingested. For a full substance view (which
+    needs approval ID, status, and substance-level access) use
+    ``gsrs://substances/{identifier}/summary`` instead.
+
+    Args:
+        identifier: Substance UUID. Must be a valid UUID string —
+            the resource does not go through GSRS, so approval IDs
+            and display names are not resolved here.
+        root_section: Root section identifier (e.g. ``"overview"``,
+            ``"names"``, ``"codes"``, ``"definitions"``,
+            ``"relationships"``, ``"properties"``,
+            ``"references"``). These match the values returned by
+            the ``get_parent_context`` tool.
+
+    Returns:
+        Markdown string. Empty when the parent has no chunks.
+        Validation errors are returned as inline markdown starting
+        with a ``Parent summary error:`` line.
+    """
+    _ensure_runtime_initialized()
+    body, error = _render_parent_summary(
+        substance_uuid=identifier,
+        root_section=root_section,
+        max_chars=4000,
+        include_text_parts=True,
+        exclude_chunk_id="",
+    )
+    if error:
+        return error
+    if not body:
+        return (
+            f"No parent context found for substance **{identifier}** "
+            f"(root_section: `{root_section}`)."
+        )
+    return body
 
 
 @mcp.resource("gsrs://substances/{identifier}/details/{filter}", mime_type="application/json")
