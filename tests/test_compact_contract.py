@@ -15,6 +15,7 @@ class TestCompactToolContract(unittest.TestCase):
         "get_parent_context",
         "gsrs_get_substance",
         "gsrs_get_summary",
+        "gsrs_get_substance_details",
         "gsrs_parametric_search",
         "gsrs_get_facets",
         "gsrs_get_cv_domains",
@@ -28,6 +29,7 @@ class TestCompactToolContract(unittest.TestCase):
     EXPECTED_RESOURCE_URIS = [
         "gsrs://substances/{identifier}",
         "gsrs://substances/{identifier}/summary",
+        "gsrs://substances/{identifier}/details/{filter}",
         "gsrs://cv/domains",
         "gsrs://cv/{domain}/terms",
         "server://health",
@@ -96,6 +98,7 @@ class TestCompactToolContract(unittest.TestCase):
             "get_parent_context",
             "gsrs_get_substance",
             "gsrs_get_summary",
+            "gsrs_get_substance_details",
             "gsrs_parametric_search",
             "gsrs_get_facets",
             "gsrs_get_cv_domains",

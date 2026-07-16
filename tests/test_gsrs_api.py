@@ -259,6 +259,270 @@ class TestGsrsApiService(unittest.TestCase):
         with self.assertRaises(ValueError):
             service.get_cv_terms("")
 
+    def test_looks_like_uuid(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        self.assertTrue(
+            service.looks_like_uuid("0103a288-6eb6-4ced-b13a-849cd7edf028")
+        )
+        self.assertTrue(
+            service.looks_like_uuid("0103A288-6EB6-4CED-B13A-849CD7EDF028")
+        )
+        self.assertFalse(service.looks_like_uuid("not-a-uuid"))
+        self.assertFalse(service.looks_like_uuid("ASPIRIN"))
+        self.assertFalse(service.looks_like_uuid(""))
+
+    def test_resolve_substance_uuid_with_uuid_input(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with patch.object(service, "get_substance_by_uuid") as fake:
+            fake.return_value = None
+            resolved = service.resolve_substance_uuid(
+                "0103a288-6eb6-4ced-b13a-849cd7edf028"
+            )
+        self.assertEqual(resolved["uuid"], "0103a288-6eb6-4ced-b13a-849cd7edf028")
+        self.assertEqual(resolved["match_type"], "uuid")
+        # No fallback to search should have happened.
+        fake.assert_not_called()
+
+    def test_resolve_substance_uuid_via_substance_endpoint(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with patch.object(service, "get_substance_by_uuid", return_value={
+            "uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028",
+            "_name": "IBUPROFEN",
+            "approvalID": "WK2XYI10QM",
+        }) as fake_substance, patch.object(service, "parametric_search") as fake_search:
+            resolved = service.resolve_substance_uuid("WK2XYI10QM")
+        self.assertEqual(resolved["uuid"], "0103a288-6eb6-4ced-b13a-849cd7edf028")
+        self.assertEqual(resolved["name"], "IBUPROFEN")
+        self.assertEqual(resolved["approvalID"], "WK2XYI10QM")
+        self.assertEqual(resolved["match_type"], "approval_id_or_uuid")
+        fake_substance.assert_called_once()
+        # Should not have fallen through to search.
+        fake_search.assert_not_called()
+
+    def test_resolve_substance_uuid_via_name_search(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with patch.object(service, "get_substance_by_uuid", return_value=None), \
+             patch.object(service, "parametric_search", return_value={
+                 "content": [
+                     {
+                         "uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028",
+                         "_name": "ASPIRIN",
+                         "approvalID": "R16CO5Y76E",
+                     }
+                 ]
+             }) as fake_search:
+            resolved = service.resolve_substance_uuid("ASPIRIN")
+        self.assertEqual(resolved["uuid"], "0103a288-6eb6-4ced-b13a-849cd7edf028")
+        self.assertEqual(resolved["name"], "ASPIRIN")
+        self.assertEqual(resolved["match_type"], "name")
+        fake_search.assert_called_once()
+        # Search should have been called with the name as the query.
+        self.assertEqual(fake_search.call_args.kwargs.get("query"), "ASPIRIN")
+
+    def test_resolve_substance_uuid_returns_none_when_nothing_found(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with patch.object(service, "get_substance_by_uuid", return_value=None), \
+             patch.object(service, "parametric_search", return_value={"content": []}):
+            resolved = service.resolve_substance_uuid("NOPE")
+        self.assertIsNone(resolved)
+
+    def test_resolve_substance_uuid_prefers_exact_name_match(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with patch.object(service, "get_substance_by_uuid", return_value=None), \
+             patch.object(service, "parametric_search", return_value={
+                 "content": [
+                     {
+                         "uuid": "first-uuid",
+                         "_name": "Something else",
+                     },
+                     {
+                         "uuid": "exact-uuid",
+                         "_name": "ASPIRIN",
+                     },
+                 ]
+             }):
+            resolved = service.resolve_substance_uuid("aspirin")
+        self.assertEqual(resolved["uuid"], "exact-uuid")
+        self.assertEqual(resolved["match_type"], "name")
+
+    def test_get_substance_details_with_filter(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            def json(self_inner):
+                return ["ASPIRIN", "ACETYLSALICYLIC ACID"]
+
+        def fake_request(method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return FakeResponse()
+
+        with patch.object(service, "_request", side_effect=fake_request):
+            result = service.get_substance_details(
+                "0103a288-6eb6-4ced-b13a-849cd7edf028",
+                "names(type:cn)!(name)",
+            )
+
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(
+            captured["url"],
+            "https://gsrs.ncats.nih.gov/api/v1/substances(0103a288-6eb6-4ced-b13a-849cd7edf028)/names(type:cn)!(name)",
+        )
+        self.assertEqual(result, ["ASPIRIN", "ACETYLSALICYLIC ACID"])
+
+    def test_get_substance_details_with_filter_steps(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            def json(self_inner):
+                return ["ASPIRIN"]
+
+        def fake_request(method, url, **kwargs):
+            captured["url"] = url
+            return FakeResponse()
+
+        with patch.object(service, "_request", side_effect=fake_request):
+            result = service.get_substance_details(
+                "0103a288-6eb6-4ced-b13a-849cd7edf028",
+                filter_steps=["names(type:cn)", "(name)", "limit(1)"],
+            )
+
+        self.assertEqual(
+            captured["url"],
+            "https://gsrs.ncats.nih.gov/api/v1/substances(0103a288-6eb6-4ced-b13a-849cd7edf028)/names(type:cn)!(name)!limit(1)",
+        )
+        self.assertEqual(result, ["ASPIRIN"])
+
+    def test_get_substance_details_rejects_both_filter_forms(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with self.assertRaises(ValueError):
+            service.get_substance_details(
+                "0103a288-6eb6-4ced-b13a-849cd7edf028",
+                filter_expression="names",
+                filter_steps=["names"],
+            )
+
+    def test_join_filter_steps_joins_with_bang(self):
+        self.assertEqual(
+            GsrsApiService.join_filter_steps(
+                ["names(type:of)", "(name)", "limit(1)"]
+            ),
+            "names(type:of)!(name)!limit(1)",
+        )
+
+    def test_join_filter_steps_handles_empty_and_none(self):
+        for value in (None, [], ["", "  "]):
+            with self.subTest(value=value):
+                self.assertEqual(GsrsApiService.join_filter_steps(value), "")
+
+    def test_join_filter_steps_strips_whitespace(self):
+        self.assertEqual(
+            GsrsApiService.join_filter_steps(["  names  ", "(name)"]),
+            "names!(name)",
+        )
+
+    def test_get_substance_details_without_filter(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            def json(self_inner):
+                return {"uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028"}
+
+        def fake_request(method, url, **kwargs):
+            captured["url"] = url
+            return FakeResponse()
+
+        with patch.object(service, "_request", side_effect=fake_request):
+            result = service.get_substance_details(
+                "0103a288-6eb6-4ced-b13a-849cd7edf028"
+            )
+        self.assertEqual(
+            captured["url"],
+            "https://gsrs.ncats.nih.gov/api/v1/substances(0103a288-6eb6-4ced-b13a-849cd7edf028)",
+        )
+        self.assertEqual(result, {"uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028"})
+
+    def test_get_substance_details_returns_none_on_404(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+
+        class FakeResponse:
+            status_code = 404
+
+        with patch.object(service, "_request", return_value=FakeResponse()):
+            result = service.get_substance_details(
+                "0103a288-6eb6-4ced-b13a-849cd7edf028",
+                "names",
+            )
+        self.assertIsNone(result)
+
+    def test_get_substance_details_rejects_invalid_filter(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with self.assertRaises(ValueError):
+            service.get_substance_details("uuid", "names(type:of")
+
+    def test_get_substance_details_rejects_empty_uuid(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with self.assertRaises(ValueError):
+            service.get_substance_details("", "names")
+
+    def test_get_substance_details_by_identifier_resolves_then_calls(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with patch.object(service, "resolve_substance_uuid", return_value={
+            "uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028",
+            "name": "ASPIRIN",
+            "approvalID": "R16CO5Y76E",
+            "match_type": "name",
+        }) as fake_resolve, patch.object(service, "get_substance_details", return_value=[
+            "ASPIRIN"
+        ]) as fake_details:
+            payload = service.get_substance_details_by_identifier(
+                "ASPIRIN", "names(type:of)!(name)"
+            )
+        self.assertEqual(payload["resolved"]["uuid"], "0103a288-6eb6-4ced-b13a-849cd7edf028")
+        self.assertEqual(payload["result"], ["ASPIRIN"])
+        fake_resolve.assert_called_once_with("ASPIRIN")
+        fake_details.assert_called_once_with(
+            "0103a288-6eb6-4ced-b13a-849cd7edf028",
+            filter_expression="names(type:of)!(name)",
+            filter_steps=None,
+        )
+
+    def test_get_substance_details_by_identifier_with_filter_steps(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with patch.object(service, "resolve_substance_uuid", return_value={
+            "uuid": "0103a288-6eb6-4ced-b13a-849cd7edf028",
+            "name": "ASPIRIN",
+            "approvalID": "R16CO5Y76E",
+            "match_type": "name",
+        }), patch.object(service, "get_substance_details", return_value=[
+            "ASPIRIN"
+        ]) as fake_details:
+            payload = service.get_substance_details_by_identifier(
+                "ASPIRIN", filter_steps=["names(type:of)", "(name)"]
+            )
+        self.assertEqual(payload["result"], ["ASPIRIN"])
+        fake_details.assert_called_once_with(
+            "0103a288-6eb6-4ced-b13a-849cd7edf028",
+            filter_expression=None,
+            filter_steps=["names(type:of)", "(name)"],
+        )
+
+    def test_get_substance_details_by_identifier_returns_none_when_unresolved(self):
+        service = GsrsApiService(timeout=1, retry_backoff_ms=0)
+        with patch.object(service, "resolve_substance_uuid", return_value=None):
+            payload = service.get_substance_details_by_identifier("NOPE", "names")
+        self.assertIsNone(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

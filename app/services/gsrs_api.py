@@ -4,10 +4,14 @@ GSRS MCP Server - GSRS API Client Service
 Provides access to the official GSRS REST API for fetching substance data,
 searching by text, structure, and sequence.
 """
+import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import httpx
+
+from app.services.details import ParsedFilter, validate_filter
 
 
 # Official GSRS API endpoints
@@ -17,6 +21,14 @@ GSRS_SEARCH_URL = f"{GSRS_BASE_URL}/substances/search"
 GSRS_STRUCTURE_SEARCH_URL = f"{GSRS_BASE_URL}/substances/structureSearch"
 GSRS_SEQUENCE_SEARCH_URL = f"{GSRS_BASE_URL}/substances/sequenceSearch"
 GSRS_CV_URL = f"{GSRS_BASE_URL}/vocabularies"
+
+
+# UUID pattern: 8-4-4-4-12 hex characters with dashes. Used to decide
+# whether an incoming identifier is already a UUID.
+_UUID_PATTERN = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 class GsrsApiService:
@@ -298,6 +310,230 @@ class GsrsApiService:
     def get_substance(self, identifier: str) -> Optional[Dict[str, Any]]:
         """Fetch a complete substance document by UUID or approval identifier."""
         return self.get_substance_by_uuid(identifier.strip())
+
+    # ------------------------------------------------------------------
+    # Details endpoint
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def looks_like_uuid(value: str) -> bool:
+        """Return True if ``value`` matches the GSRS UUID format."""
+        return bool(value and _UUID_PATTERN.match(value.strip()))
+
+    def resolve_substance_uuid(
+        self,
+        identifier: str,
+        *,
+        search_size: int = 5,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve any substance identifier (UUID, approval ID, or name) to a UUID.
+
+        The GSRS "details" endpoint requires a substance UUID as the
+        primary key. Callers may pass any of the common GSRS
+        identifiers, so this helper:
+
+        1. Returns the value directly when it already looks like a UUID.
+        2. Tries the standard ``get_substance`` (which accepts approval IDs
+           via the substance endpoint).
+        3. Falls back to a free-text name search and returns the first
+           exact display-name match, or the top hit if there is no
+           exact match.
+
+        Args:
+            identifier: Substance UUID, approval ID, or display name.
+            search_size: Max number of search results to consider when
+                falling back to a name search.
+
+        Returns:
+            A dict with keys ``uuid`` (the resolved UUID), ``name`` (the
+            preferred display name, when known), ``approvalID``, and
+            ``match_type`` (``"uuid"``, ``"approval_id"``, ``"name"``).
+            Returns ``None`` when the identifier cannot be resolved.
+        """
+        if not identifier or not identifier.strip():
+            return None
+        value = identifier.strip()
+
+        if self.looks_like_uuid(value):
+            return {
+                "uuid": value,
+                "name": None,
+                "approvalID": None,
+                "match_type": "uuid",
+            }
+
+        substance = self.get_substance_by_uuid(value)
+        if substance is not None:
+            return {
+                "uuid": str(substance.get("uuid", value)),
+                "name": substance.get("_name"),
+                "approvalID": substance.get("approvalID"),
+                "match_type": "approval_id_or_uuid",
+            }
+
+        payload = self.parametric_search(query=value, page=1, size=max(1, search_size))
+        content = payload.get("content") or payload.get("results") or []
+        if not content:
+            return None
+
+        target = value.casefold()
+        for entry in content:
+            if not isinstance(entry, dict):
+                continue
+            display = entry.get("_name") or ""
+            if display and display.casefold() == target:
+                uuid = entry.get("uuid")
+                if uuid:
+                    return {
+                        "uuid": str(uuid),
+                        "name": display,
+                        "approvalID": entry.get("approvalID")
+                        or entry.get("_approvalIDDisplay"),
+                        "match_type": "name",
+                    }
+
+        first = content[0]
+        if not isinstance(first, dict):
+            return None
+        uuid = first.get("uuid")
+        if not uuid:
+            return None
+        return {
+            "uuid": str(uuid),
+            "name": first.get("_name"),
+            "approvalID": first.get("approvalID") or first.get("_approvalIDDisplay"),
+            "match_type": "name",
+        }
+
+    @staticmethod
+    def join_filter_steps(steps: Optional[List[str]]) -> str:
+        """Join a list of filter steps with the ``!`` delimiter.
+
+        The GSRS details endpoint treats ``!`` as a delimiter
+        between successive transformations (projections, sorts, and
+        aggregations). This helper assembles a list of steps into
+        the single string that the upstream endpoint expects.
+
+        Args:
+            steps: List of filter steps. The first step is the
+                elements path; subsequent steps are projections or
+                aggregations (each entry is the step body without
+                the leading ``!``). ``None`` or an empty list
+                produces an empty string.
+
+        Returns:
+            The joined filter string, e.g.
+            ``"names(type:of)!(name)!limit(1)"``.
+        """
+        if not steps:
+            return ""
+        return "!".join(str(step).strip() for step in steps if str(step).strip())
+
+    def get_substance_details(
+        self,
+        uuid: str,
+        filter_expression: Optional[str] = None,
+        *,
+        filter_steps: Optional[List[str]] = None,
+    ) -> Any:
+        """Call the GSRS "details" endpoint for a single substance.
+
+        The endpoint ``/api/v1/substances({uuid})/{filter}`` returns a
+        filtered view of a substance record. The filter is a
+        ``!``-delimited sequence of "steps" applied in order.
+
+        Args:
+            uuid: Substance UUID (already resolved by the caller).
+            filter_expression: Optional pre-joined details filter
+                string. Pass either this **or** ``filter_steps``, not
+                both. When ``None``/empty (and ``filter_steps`` is
+                also empty), the full substance document is
+                returned.
+            filter_steps: Optional list of filter steps. The first
+                step is the elements path; subsequent steps are
+                projections or aggregations (each entry is the step
+                body without the leading ``!``). Joined with
+                ``!`` before being appended to the URL.
+
+        Returns:
+            The parsed JSON response. The shape depends on the
+            filter: an object, an array, a string, a number, or
+            ``None`` for empty results.
+
+        Raises:
+            ValueError: If the filter expression is malformed or if
+                both ``filter_expression`` and ``filter_steps`` are
+                provided.
+            RuntimeError: If the upstream request fails or returns a
+                non-success status (except 404, which returns
+                ``None``).
+        """
+        if not uuid or not str(uuid).strip():
+            raise ValueError("A substance UUID is required.")
+        clean_uuid = str(uuid).strip()
+
+        if filter_expression is not None and filter_steps is not None:
+            raise ValueError(
+                "Pass either filter_expression or filter_steps, not both."
+            )
+
+        # Prefer the structured form when provided.
+        if filter_steps is not None:
+            joined = self.join_filter_steps(filter_steps)
+        elif filter_expression is not None:
+            joined = filter_expression.strip()
+        else:
+            joined = ""
+
+        # Validate the joined filter locally; the server is the
+        # source of truth for evaluation, but we want a clean local
+        # error message for obvious mistakes.
+        if joined:
+            validate_filter(joined)
+            filter_path = "/" + joined.lstrip("/")
+        else:
+            filter_path = ""
+
+        url = f"{self.base_url}/substances({quote(clean_uuid, safe='')}){filter_path}"
+        resp = self._request("GET", url)
+        if resp.status_code == 404:
+            return None
+        # The details endpoint can return a JSON literal (string,
+        # number, null) instead of a structured object. ``.json()``
+        # handles all of these, so we delegate.
+        return resp.json()
+
+    def get_substance_details_by_identifier(
+        self,
+        identifier: str,
+        filter_expression: Optional[str] = None,
+        *,
+        filter_steps: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve an identifier and call the details endpoint.
+
+        Convenience wrapper that combines
+        :meth:`resolve_substance_uuid` and
+        :meth:`get_substance_details` into a single call. Accepts
+        either ``filter_expression`` (a pre-joined string) or
+        ``filter_steps`` (a list of step bodies to be joined with
+        ``!``). The returned dict has two keys:
+
+        - ``"resolved"``: the identifier-resolution payload from
+          :meth:`resolve_substance_uuid` (or ``None`` if the
+          identifier could not be resolved).
+        - ``"result"``: the raw details response from the upstream
+          server.
+        """
+        resolved = self.resolve_substance_uuid(identifier)
+        if resolved is None:
+            return None
+        result = self.get_substance_details(
+            resolved["uuid"],
+            filter_expression=filter_expression,
+            filter_steps=filter_steps,
+        )
+        return {"resolved": resolved, "result": result}
 
     def text_search(
         self,

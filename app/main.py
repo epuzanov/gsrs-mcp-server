@@ -17,6 +17,7 @@ from mcp.types import Prompt, PromptMessage, TextContent, ToolAnnotations
 from app.config import settings
 from app.observability import ToolTelemetry, configure_logging
 from app.runtime import ServerRuntime
+from app.services.details import FilterError, validate_filter
 from app.services.summary import substance_to_markdown
 
 configure_logging(
@@ -112,6 +113,7 @@ mcp = FastMCP(
         "rag_query_chunks for raw chunk retrieval, rag_ingest to load GSRS substance JSON, "
         "and the GSRS API search tools for live API lookup. "
         "Resources: gsrs://substances/{identifier} for raw JSON, gsrs://substances/{identifier}/summary for markdown summary, "
+        "gsrs://substances/{identifier}/details/{filter} for the GSRS details section, "
         "gsrs://cv/domains for controlled vocabulary domain list, gsrs://cv/{domain}/terms for controlled vocabulary lookup, "
         "and server://health / server://statistics for runtime state. "
         "Use get_parent_context to explore parent context for specific chunks. "
@@ -545,6 +547,149 @@ async def gsrs_get_summary(identifier: str) -> str:
     except Exception as exc:
         tool.fail(exc, result_count=0, citation_count=0)
         return f"GSRS summary error: {exc}"
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+async def gsrs_get_substance_details(
+    substance_identifier: str,
+    filter_steps: str = "",
+) -> str:
+    """Fetch a filtered view of a GSRS substance record.
+
+    Implements the GSRS "details" API section
+    (https://gsrs.ncats.nih.gov/api-documentation). The substance is
+    looked up by UUID, approval ID, or display name, then a list of
+    filter steps is joined with ``!`` and appended to the path
+    ``/api/v1/substances({uuid})/{joined}`` to narrow the response.
+
+    Args:
+        substance_identifier: GSRS substance UUID, approval ID, or
+            display name. Names are resolved to a UUID via a name
+            search.
+        filter_steps: Optional list of filter steps. Accepted as a
+            JSON array (e.g. ``["names(type:of)", "(name)"]``) or a
+            comma-separated string. Empty or omitted means "no
+            filter" (the full substance record is returned). The
+            steps are joined with ``!`` in the order given.
+
+    Filter syntax (each step):
+        The joined string is a sequence of ``!``-delimited "steps"
+        applied in order. Read it left-to-right: each step takes the
+        previous result and transforms it.
+
+        The first step is an **elements path** (the only step that
+        does not begin with ``!``); every subsequent step is a
+        ``!``-prefixed transformation.
+
+        1. **Elements path** — one or more ``/``-separated path
+           segments that name the JSON section to walk into (e.g.
+           ``names``, ``codes``, ``relationships/relatedSubstance``).
+           May be followed by zero or more parenthesized
+           **locators** that filter the elements:
+
+           - ``($0)`` selects the first element of a collection by
+             index.
+           - ``(field:value)`` keeps only elements where
+             ``field == value``.
+           - ``(relatedSubstance/approvalID:WK2XYI10QM)`` uses ``/``
+             to walk a sub-path before matching.
+
+           Multiple locators may be combined; they are AND-ed
+           together.
+        2. **Subsequent steps** — each step picks one of these
+           operations (every step is prefixed by the ``!`` delimiter
+           already introduced above):
+
+           - **`(fieldName)`** — field projection: returns a JSON
+             array of values for that field on each remaining
+             element.
+           - **`sort(field)`** / **`revsort(field)`** — sort
+             ascending or descending by field.
+           - **`skip(N)`** — skip the first N elements.
+           - **`limit(N)`** — keep the first N elements.
+           - **`distinct(field)`** — return distinct values of
+             ``field``.
+           - **`count()`** — return the count as a number.
+           - **`group(field)`** — return a JSON object grouped by
+             ``field``.
+
+           Steps are evaluated in the order they appear; e.g.
+           ``sort(x)!limit(1)`` (after the initial elements step)
+           returns the first element after sorting.
+
+    Examples:
+        # Names of type "of" projected to the "name" field
+        gsrs_get_substance_details(
+            "Ibuprofen",
+            '["names(type:of)", "(name)"]',
+        )
+
+        # First common name
+        gsrs_get_substance_details(
+            "Ibuprofen",
+            '["names(type:cn)", "(name)", "limit(1)"]',
+        )
+
+        # Count of non-deprecated names
+        gsrs_get_substance_details(
+            "Ibuprofen",
+            '["names(deprecated:false)", "count()"]',
+        )
+
+        # Display names of relationships pointing to a specific substance
+        gsrs_get_substance_details(
+            "Ibuprofen",
+            '["relationships(type:IMPURITY->PARENT)'
+            '(relatedSubstance/approvalID:600T0F0PX0)",'
+            ' "(relatedSubstance/refPname)"]',
+        )
+
+        # Codes sorted by code system, then projected
+        gsrs_get_substance_details(
+            "Ibuprofen",
+            '["codes", "sort(codeSystem)", "(codeSystem)"]',
+        )
+
+        # Comma-separated form is also accepted
+        gsrs_get_substance_details("Ibuprofen", "names(type:of), (name)")
+    """
+    _ensure_runtime_initialized()
+    tool = _tool_call("gsrs_get_substance_details", query_type="details")
+    try:
+        if not runtime.gsrs_api_available():
+            reason = runtime.gsrs_api_unavailable_reason()
+            tool.finish("degraded", result_count=0, citation_count=0, error_message=reason)
+            return f"GSRS API is currently unavailable: {reason}"
+
+        steps = _parse_list(filter_steps)
+        joined_filter = runtime.gsrs_api.join_filter_steps(steps)
+        # Delegate to the canonical resource implementation (single
+        # source of truth). The resource accepts the joined string
+        # so it remains a thin wrapper over the GSRS URL contract.
+        result = await gsrs_substance_details_resource(
+            substance_identifier, joined_filter
+        )
+        payload = json.loads(result)
+        if isinstance(payload, dict) and payload.get("error"):
+            error = str(payload["error"])
+            # Distinguish "abstained" (e.g. 404 / not found) from "degraded".
+            if "not found" in error.lower() or "could not resolve" in error.lower():
+                tool.finish("abstained", result_count=0, citation_count=0)
+            else:
+                tool.finish("degraded", result_count=0, citation_count=0, error_message=error)
+        else:
+            tool.finish("success", result_count=1, citation_count=0)
+        return result
+    except Exception as exc:
+        tool.fail(exc, result_count=0, citation_count=0)
+        return f"GSRS get_substance_details error: {exc}"
 
 
 @mcp.tool(
@@ -1011,6 +1156,107 @@ async def gsrs_substance_summary_resource(identifier: str) -> str:
         return substance_to_markdown(substance)
     except Exception as exc:
         return f"GSRS summary error: {exc}"
+
+
+@mcp.resource("gsrs://substances/{identifier}/details/{filter}", mime_type="application/json")
+async def gsrs_substance_details_resource(identifier: str, filter: str = "") -> str:
+    """Return a filtered view of a GSRS substance record.
+
+    Implements the GSRS "details" API section
+    (https://gsrs.ncats.nih.gov/api-documentation). The substance
+    is resolved by UUID, approval ID, or display name, then a
+    list of filter steps is joined with ``!`` and appended to the
+    path ``/api/v1/substances({uuid})/{joined}`` to narrow the
+    response.
+
+    The filter contract is a **list of steps** (matching
+    :func:`gsrs_get_substance_details`). The URI template's
+    ``{filter}`` segment is a single pre-joined string for
+    transport; this function splits it back into steps, joins
+    them again, and validates the result so URI callers and
+    in-process callers share the same code path. In-process
+    callers (the :func:`gsrs_get_substance_details` tool) pass
+    the raw ``filter`` string the same way and get the same
+    treatment — there is no separate "joined" form.
+
+    Args:
+        identifier: GSRS substance UUID, approval ID, or display
+            name. Names are resolved to a UUID via a name search.
+        filter: Pre-joined details-filter expression
+            (``!``-delimited). May be empty. See
+            :func:`gsrs_get_substance_details` for the grammar.
+    """
+    _ensure_runtime_initialized()
+    if not runtime.gsrs_api_available():
+        return json.dumps({"error": runtime.gsrs_api_unavailable_reason()})
+
+    identifier_text = identifier.strip() if identifier else ""
+    if not identifier_text:
+        return json.dumps({"error": "A substance_identifier is required."})
+
+    # The contract is a list of steps. The URI template's
+    # ``{filter}`` is a pre-joined string; split it back into a
+    # list so joining/validation happens exactly once, here.
+    filter_steps = _split_filter_text(filter)
+
+    try:
+        joined_filter = runtime.gsrs_api.join_filter_steps(filter_steps)
+        if joined_filter:
+            validate_filter(joined_filter)
+    except FilterError as exc:
+        return json.dumps({"error": f"Invalid filter: {exc}"})
+
+    try:
+        payload = runtime.gsrs_api.get_substance_details_by_identifier(
+            identifier_text, joined_filter or None
+        )
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    if payload is None:
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve substance identifier {identifier_text!r}: "
+                    "no matching record found in the GSRS API."
+                )
+            }
+        )
+
+    resolved = payload.get("resolved") or {}
+    result = payload.get("result")
+    return json.dumps(
+        {
+            "resolved": resolved,
+            "filter": joined_filter or None,
+            "filter_steps": filter_steps or None,
+            "result": result,
+        },
+        indent=2,
+        default=str,
+    )
+
+
+def _split_filter_text(filter_text: str | None) -> list[str]:
+    """Split a pre-joined details filter string into its ``!``-delimited steps.
+
+    The resource's URI template transports the filter as a single
+    pre-joined string (e.g. ``"names(type:of)!(name)!limit(1)"``).
+    The canonical contract is a list of steps, so we split the
+    string back into its component steps here. ``!`` is a
+    delimiter between steps and does not appear inside any valid
+    step body, so a simple split is sufficient (and round-trips
+    with :meth:`GsrsApiService.join_filter_steps`).
+
+    An empty/None input returns an empty list — equivalent to
+    "no filter, return the full substance record".
+    """
+    if not filter_text:
+        return []
+    text = filter_text.strip()
+    if not text:
+        return []
+    return [step.strip() for step in text.split("!") if step.strip()]
 
 
 @mcp.resource("gsrs://cv/domains", mime_type="application/json")
