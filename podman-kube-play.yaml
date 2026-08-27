@@ -60,6 +60,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: gsrs-postgres-data
+  namespace: gsrs-mcp
 spec:
   accessModes:
     - ReadWriteOnce
@@ -72,6 +73,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: gsrs-chroma-data
+  namespace: gsrs-mcp
 spec:
   accessModes:
     - ReadWriteOnce
@@ -84,6 +86,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: gsrs-caddy-data
+  namespace: gsrs-mcp
 spec:
   accessModes:
     - ReadWriteOnce
@@ -92,10 +95,34 @@ spec:
       storage: 1Gi
 
 ---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: caddy-config-files
+  namespace: gsrs-mcp
+immutable: true
+data:
+  Caddyfile: |-
+    {
+      admin off
+    }
+    {$MCP_HOSTNAME:gsrs.example.com} {
+      tls {$ACME_EMAIL:admin@example.com} {
+        ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+        eab {$ACME_KEY_ID} {$ACME_MAC_KEY}
+      }
+      encode gzip zstd
+      reverse_proxy {$MCP_UPSTREAM:localhost:8000} {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+      }
+    }
+---
 apiVersion: v1
 kind: Pod
 metadata:
   name: gsrs-mcp
+  namespace: gsrs-mcp
   labels:
     app: gsrs-mcp-server
 spec:
@@ -142,47 +169,31 @@ spec:
       envFrom:
         - configMapRef:
             name: httpd-env
-      command:
-        - /bin/sh
-        - -c
-        - |
-          mkdir -p /data
-          cat > /data/Caddyfile <<'EOF'
-          {$MCP_HOSTNAME:gsrs.example.com} {
-            tls {$ACME_EMAIL:admin@example.com} {
-              ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
-              eab {$ACME_KEY_ID} {$ACME_MAC_KEY}
-            }
-            encode gzip zstd
-            reverse_proxy {$MCP_UPSTREAM:localhost:8000} {
-              header_up Host {host}
-              header_up X-Real-IP {remote_host}
-              header_up X-Forwarded-For {remote_host}
-              header_up X-Forwarded-Proto {scheme}
-            }
-          }
-          EOF
-          exec caddy run --config /data/Caddyfile
       ports:
         - containerPort: 80
           hostPort: 8080
         - containerPort: 443
           hostPort: 8443
       volumeMounts:
-        - name: caddy-data
-          mountPath: /data
         - name: caddy-config-cache
           mountPath: /config
+        - name: caddy-config-volume
+          mountPath: /etc/caddy
+        - name: caddy-data
+          mountPath: /data
   volumes:
-    - name: postgres-data
-      persistentVolumeClaim:
-        claimName: gsrs-postgres-data
-    - name: chroma-data
-      persistentVolumeClaim:
-        claimName: gsrs-chroma-data
+    - name: caddy-config-cache
+      emptyDir: {}
+    - name: caddy-config-volume
+      configMap:
+        name: caddy-config-files
+        defaultMode: 420
     - name: caddy-data
       persistentVolumeClaim:
         claimName: gsrs-caddy-data
-    - name: caddy-config-cache
-      emptyDir: {}
-
+    - name: chroma-data
+      persistentVolumeClaim:
+        claimName: gsrs-chroma-data
+    - name: postgres-data
+      persistentVolumeClaim:
+        claimName: gsrs-postgres-data
